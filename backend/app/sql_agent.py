@@ -1,13 +1,14 @@
-import pandas as pd
-import tempfile
-import os
-from typing import Dict, Any, List, Optional
-from langchain_openai import ChatOpenAI
-from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain.agents import create_agent  # 新的 API！
-from sqlalchemy import create_engine, text
 import logging
+import os
+import tempfile
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+from langchain.agents import create_agent  # 新的 API！
+from langchain_community.agent_toolkits import SQLDatabaseToolkit
+from langchain_community.utilities import SQLDatabase
+from langchain_openai import ChatOpenAI
+from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,13 @@ logger = logging.getLogger(__name__)
 class SQLAgentManager:
     """管理LangChain SQL Agent的创建和执行"""
 
-    def __init__(self, openai_api_key: Optional[str] = None, openai_base_url: Optional[str] = None, model: str = "gpt-3.5-turbo"):
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+        model: str = "gpt-3.5-turbo",
+        temperature: float = 0.7,
+    ):
         """
         初始化SQL Agent管理器
 
@@ -31,6 +38,7 @@ class SQLAgentManager:
         self.agent_executor = None
         self.db_connection = None
         self.temp_db_path = None
+        self.temperature = temperature
 
         if self.openai_api_key:
             self._initialize_llm()
@@ -41,8 +49,8 @@ class SQLAgentManager:
             # 构建ChatOpenAI参数
             kwargs = {
                 "model": self.model,
-                "temperature": 0.0,
-                "api_key": self.openai_api_key
+                "temperature": self.temperature,
+                "api_key": self.openai_api_key,
             }
 
             # 如果设置了自定义base_url，添加到参数中
@@ -56,8 +64,9 @@ class SQLAgentManager:
         except Exception as e:
             logger.error(f"Error initializing LLM: {str(e)}")
 
-    def create_database_from_file(self, file_content: bytes, file_type: str,
-                                 table_name: str = "data_table") -> Dict[str, Any]:
+    def create_database_from_file(
+        self, file_content: bytes, file_type: str, table_name: str = "data_table"
+    ) -> Dict[str, Any]:
         """
         从文件创建SQLite数据库
 
@@ -71,17 +80,20 @@ class SQLAgentManager:
         """
         try:
             # 创建临时数据库
-            temp_file = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+            temp_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
             self.temp_db_path = temp_file.name
             temp_file.close()
 
             # 读取文件数据
-            if file_type == 'csv':
+            if file_type == "csv":
                 df = pd.read_csv(pd.io.common.BytesIO(file_content))
-            elif file_type in ['excel', 'xlsx', 'xls']:
+            elif file_type in ["excel", "xlsx", "xls"]:
                 df = pd.read_excel(pd.io.common.BytesIO(file_content))
             else:
-                return {"success": False, "error": f"Unsupported file type: {file_type}"}
+                return {
+                    "success": False,
+                    "error": f"Unsupported file type: {file_type}",
+                }
 
             # 清理列名（确保是有效的SQL标识符）
             df.columns = [self._clean_column_name(col) for col in df.columns]
@@ -92,7 +104,7 @@ class SQLAgentManager:
             self.db_connection = engine
 
             # 将数据写入数据库
-            df.to_sql(table_name, engine, if_exists='replace', index=False)
+            df.to_sql(table_name, engine, if_exists="replace", index=False)
 
             # 创建SQLDatabase对象
             self.db = SQLDatabase.from_uri(db_uri)
@@ -104,7 +116,7 @@ class SQLAgentManager:
                 "table_name": table_name,
                 "rows": len(df),
                 "columns": df.columns.tolist(),
-                "db_path": self.temp_db_path
+                "db_path": self.temp_db_path,
             }
 
         except Exception as e:
@@ -114,7 +126,7 @@ class SQLAgentManager:
     def _clean_column_name(self, col_name: str) -> str:
         """清理列名以符合SQL标识符规范"""
         # 移除特殊字符，替换为下划线
-        cleaned = "".join(c if c.isalnum() or c == '_' else '_' for c in str(col_name))
+        cleaned = "".join(c if c.isalnum() or c == "_" else "_" for c in str(col_name))
         # 确保不以数字开头
         if cleaned and cleaned[0].isdigit():
             cleaned = "col_" + cleaned
@@ -137,7 +149,7 @@ class SQLAgentManager:
             if not self.llm:
                 return {"success": False, "error": "LLM not initialized"}
 
-            if not hasattr(self, 'db'):
+            if not hasattr(self, "db"):
                 return {"success": False, "error": "Database not created"}
 
             # 默认系统提示
@@ -193,14 +205,14 @@ class SQLAgentManager:
 5. 如果用户只是要求显示数据（如"显示前10条"），简要总结查询到的数据特征即可，不需要冗长分析
 
 **示例：**
-- 用户问："查询前10个数据" → 
+- 用户问："查询前10个数据" →
   步骤1: 调用 sql_db_list_tables 得到表名 "file_abc123"
-  步骤2: SQL: SELECT * FROM file_abc123 LIMIT 10 
+  步骤2: SQL: SELECT * FROM file_abc123 LIMIT 10
   步骤3: 报告：简要描述这10条数据的主要特征
-  
-- 用户问："销售额最高的前5个产品" → 
+
+- 用户问："销售额最高的前5个产品" →
   步骤1: 调用 sql_db_list_tables 得到表名
-  步骤2: SQL: SELECT * FROM <实际表名> ORDER BY sales DESC LIMIT 5 
+  步骤2: SQL: SELECT * FROM <实际表名> ORDER BY sales DESC LIMIT 5
   步骤3: 报告：列出TOP5产品及其销售额，并分析"""
 
             prompt = system_prompt or default_system_prompt
@@ -211,11 +223,8 @@ class SQLAgentManager:
 
             logger.info(f"创建 SQL Agent，可用工具: {[tool.name for tool in tools]}")
 
-            # 使用新的 create_agent API（不会触发 transformers 依赖）
             self.agent_executor = create_agent(
-                model=self.llm,
-                tools=tools,
-                system_prompt=prompt
+                model=self.llm, tools=tools, system_prompt=prompt
             )
 
             return {"success": True, "message": "SQL Agent created successfully"}
@@ -223,6 +232,7 @@ class SQLAgentManager:
         except Exception as e:
             logger.error(f"Error creating SQL agent: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -240,112 +250,131 @@ class SQLAgentManager:
             if not self.agent_executor:
                 return {"success": False, "error": "SQL Agent not created"}
 
-            # 使用新的 invoke 格式
-            result = self.agent_executor.invoke({
-                "messages": [{"role": "user", "content": question}]
-            })
+            result = self.agent_executor.invoke(
+                {"messages": [{"role": "user", "content": question}]}
+            )
 
             # 从返回的 messages 中提取最后一条（agent 的回复）
             messages = result.get("messages", [])
-            
+
             # 调试日志
             logger.info(f"Agent 返回了 {len(messages)} 条消息")
             for i, msg in enumerate(messages):
-                logger.info(f"消息 {i}: type={type(msg).__name__}, has_tool_calls={hasattr(msg, 'tool_calls')}")
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                logger.info(
+                    f"消息 {i}: type={type(msg).__name__}, has_tool_calls={hasattr(msg, 'tool_calls')}"
+                )
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
                     logger.info(f"  工具调用数量: {len(msg.tool_calls)}")
                     for j, tc in enumerate(msg.tool_calls):
                         logger.info(f"  工具调用 {j}: {tc}")
-            
+
             # 找到最后一条 AI 消息（包含完整分析报告）
             answer = ""
             for msg in reversed(messages):
-                if hasattr(msg, 'content') and msg.content:
+                if hasattr(msg, "content") and msg.content:
                     content = msg.content
                     # 如果内容包含 Markdown 格式的分析报告，直接使用
-                    if '## 📊' in content or '数据分析报告' in content or '核心发现' in content:
+                    if (
+                        "## 📊" in content
+                        or "数据分析报告" in content
+                        or "核心发现" in content
+                    ):
                         answer = content
                         break
                     # 否则累积所有有意义的内容
-                    if content.strip() and content.strip() not in ['查询完成', '已找到', '查询成功']:
+                    if content.strip() and content.strip() not in [
+                        "查询完成",
+                        "已找到",
+                        "查询成功",
+                    ]:
                         answer = content
                         break
-            
+
             # 如果没有找到合适的答案，尝试组合所有消息
             if not answer or len(answer) < 50:
                 all_contents = []
                 for msg in reversed(messages):
-                    if hasattr(msg, 'content') and msg.content:
+                    if hasattr(msg, "content") and msg.content:
                         content = msg.content.strip()
-                        if content and content not in ['查询完成', '已找到', '查询成功']:
+                        if content and content not in [
+                            "查询完成",
+                            "已找到",
+                            "查询成功",
+                        ]:
                             all_contents.append(content)
                 if all_contents:
-                    answer = '\n\n'.join(all_contents)
-            
+                    answer = "\n\n".join(all_contents)
+
             # 如果还是没有，使用默认提示
             if not answer or len(answer) < 20:
                 answer = "查询完成，请查看下方数据表格和分析图表。"
-            
+
             # 提取工具调用和 SQL
             sql_queries = []
             reasoning_steps = []
-            
+
             for msg in messages:
                 # 检查是否有工具调用
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tool_call in msg.tool_calls:
                         # tool_call 可能是字典或对象
                         if isinstance(tool_call, dict):
-                            tool_name = tool_call.get('name', '')
-                            tool_args = tool_call.get('args', {})
+                            tool_name = tool_call.get("name", "")
+                            tool_args = tool_call.get("args", {})
                         else:
                             # 如果是对象，使用属性访问
-                            tool_name = getattr(tool_call, 'name', '')
-                            tool_args = getattr(tool_call, 'args', {})
-                        
+                            tool_name = getattr(tool_call, "name", "")
+                            tool_args = getattr(tool_call, "args", {})
+
                         reasoning_steps.append(f"调用工具: {tool_name}")
-                        
+
                         # 提取 SQL 查询
-                        if tool_name == 'sql_db_query':
+                        if tool_name == "sql_db_query":
                             if isinstance(tool_args, dict):
-                                sql = tool_args.get('query', '')
+                                sql = tool_args.get("query", "")
                             else:
-                                sql = getattr(tool_args, 'query', '')
-                            
+                                sql = getattr(tool_args, "query", "")
+
                             if sql:
                                 # 清理 SQL 中可能的 HTML/Tailwind 标记
                                 import re
+
                                 sql_clean = sql
                                 # 移除各种可能的 HTML 标记
-                                sql_clean = re.sub(r'\d+\s+font-[a-z-]+["\']?>', '', sql_clean)
-                                sql_clean = re.sub(r'<[^>]+>', '', sql_clean)  # 移除所有 HTML 标签
-                                sql_clean = re.sub(r'className="[^"]*"', '', sql_clean)  # 移除 className
+                                sql_clean = re.sub(
+                                    r'\d+\s+font-[a-z-]+["\']?>', "", sql_clean
+                                )
+                                sql_clean = re.sub(
+                                    r"<[^>]+>", "", sql_clean
+                                )  # 移除所有 HTML 标签
+                                sql_clean = re.sub(
+                                    r'className="[^"]*"', "", sql_clean
+                                )  # 移除 className
                                 sql_clean = sql_clean.strip()
-                                
+
                                 if sql_clean:
                                     sql_queries.append(sql_clean)
-                                    logger.info(f"提取到 SQL (长度 {len(sql_clean)}): {sql_clean[:100]}...")
+                                    logger.info(
+                                        f"提取到 SQL (长度 {len(sql_clean)}): {sql_clean[:100]}..."
+                                    )
                                 reasoning_steps.append(f"执行 SQL 查询")
-                        elif tool_name == 'sql_db_schema':
+                        elif tool_name == "sql_db_schema":
                             if isinstance(tool_args, dict):
-                                tables = tool_args.get('table_names', '')
+                                tables = tool_args.get("table_names", "")
                             else:
-                                tables = getattr(tool_args, 'table_names', '')
+                                tables = getattr(tool_args, "table_names", "")
                             reasoning_steps.append(f"查看表结构: {tables}")
-                        elif tool_name == 'sql_db_list_tables':
+                        elif tool_name == "sql_db_list_tables":
                             reasoning_steps.append("列出所有数据库表")
-                        elif tool_name == 'sql_db_query_checker':
+                        elif tool_name == "sql_db_query_checker":
                             reasoning_steps.append("检查 SQL 语法正确性")
 
             # 获取最后一个SQL查询
             sql = sql_queries[-1] if sql_queries else None
-            
+
             # 如果没有提取到推理步骤，添加默认步骤
             if not reasoning_steps:
-                reasoning_steps = [
-                    f"分析问题: {question}",
-                    "查询数据库并生成答案"
-                ]
+                reasoning_steps = [f"分析问题: {question}", "查询数据库并生成答案"]
 
             # 提取实际的查询数据
             data = []
@@ -353,7 +382,7 @@ class SQLAgentManager:
             if sql:
                 try:
                     # 执行 SQL 获取实际数据
-                    sql_result = self.execute_custom_sql(sql)
+                    sql_result = self.execute_sql(sql)
                     if sql_result["success"]:
                         data = sql_result["data"]
                         columns = sql_result["columns"]
@@ -368,12 +397,13 @@ class SQLAgentManager:
                 "reasoning": reasoning_steps,
                 "data": data,
                 "columns": columns,
-                "returned_rows": len(data)
+                "returned_rows": len(data),
             }
 
         except Exception as e:
             logger.error(f"Error querying data: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -385,7 +415,7 @@ class SQLAgentManager:
             表结构信息
         """
         try:
-            if not hasattr(self, 'db'):
+            if not hasattr(self, "db"):
                 return {"success": False, "error": "Database not created"}
 
             # 获取所有表
@@ -397,17 +427,13 @@ class SQLAgentManager:
                 schema = self.db.get_table_info(table_names=[table])
                 schema_info[table] = schema
 
-            return {
-                "success": True,
-                "tables": tables,
-                "schema": schema_info
-            }
+            return {"success": True, "tables": tables, "schema": schema_info}
 
         except Exception as e:
             logger.error(f"Error getting table schema: {str(e)}")
             return {"success": False, "error": str(e)}
 
-    def execute_custom_sql(self, sql_query: str) -> Dict[str, Any]:
+    def execute_sql(self, sql_query: str) -> Dict[str, Any]:
         """
         执行自定义SQL查询
 
@@ -419,7 +445,10 @@ class SQLAgentManager:
         """
         try:
             if not self.db_connection:
-                return {"success": False, "error": "Database connection not established"}
+                return {
+                    "success": False,
+                    "error": "Database connection not established",
+                }
 
             # 使用SQLAlchemy执行查询
             with self.db_connection.connect() as conn:
@@ -438,7 +467,7 @@ class SQLAgentManager:
                 "success": True,
                 "data": data,
                 "columns": columns,
-                "row_count": len(data)
+                "row_count": len(data),
             }
 
         except Exception as e:

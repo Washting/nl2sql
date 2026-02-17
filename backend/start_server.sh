@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# SQL Agent 后端启动脚本
-
-export OPENAI_API_KEY="sk-proj-xxx"
-export OPENAI_BASE_URL="https://ai.devtool.tech/proxy/v1"
-
 # 禁用 CUDA 和 transformers 编译
 export CUDA_VISIBLE_DEVICES=""
 export TRANSFORMERS_OFFLINE=1
@@ -21,5 +16,4 @@ echo "Base URL: $OPENAI_BASE_URL"
 echo "===================================="
 
 cd "$(dirname "$0")"
-python api_with_db.py
-
+python run.py

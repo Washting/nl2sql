@@ -1,31 +1,34 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.utils import PlotlyJSONEncoder
-import json
-import io
 import base64
-from typing import Dict, Any, List, Optional
+import io
+import json
 import logging
+from typing import Any, Dict, List, Optional
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import seaborn as sns
+from plotly.utils import PlotlyJSONEncoder
 
 logger = logging.getLogger(__name__)
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.sans-serif"] = ["SimHei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
 
 
 class DataVisualizer:
     """数据可视化工具类"""
 
     @staticmethod
-    def create_chart(data: List[Dict[str, Any]], chart_type: str,
-                    x_column: Optional[str] = None,
-                    y_column: Optional[str] = None,
-                    group_by: Optional[str] = None,
-                    title: Optional[str] = None) -> Dict[str, Any]:
+    def create_chart(
+        data: List[Dict[str, Any]],
+        chart_type: str,
+        x_column: Optional[str] = None,
+        y_column: Optional[str] = None,
+        group_by: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         创建图表
 
@@ -49,21 +52,32 @@ class DataVisualizer:
 
             # 根据图表类型创建图表
             if chart_type == "bar":
-                result = DataVisualizer._create_bar_chart(df, x_column, y_column, group_by, title)
+                result = DataVisualizer._create_bar_chart(
+                    df, x_column, y_column, group_by, title
+                )
             elif chart_type == "line":
-                result = DataVisualizer._create_line_chart(df, x_column, y_column, group_by, title)
+                result = DataVisualizer._create_line_chart(
+                    df, x_column, y_column, group_by, title
+                )
             elif chart_type == "pie":
                 result = DataVisualizer._create_pie_chart(df, x_column, y_column, title)
             elif chart_type == "scatter":
-                result = DataVisualizer._create_scatter_chart(df, x_column, y_column, group_by, title)
+                result = DataVisualizer._create_scatter_chart(
+                    df, x_column, y_column, group_by, title
+                )
             elif chart_type == "histogram":
                 result = DataVisualizer._create_histogram(df, x_column, title)
             elif chart_type == "box":
-                result = DataVisualizer._create_box_chart(df, x_column, y_column, group_by, title)
+                result = DataVisualizer._create_box_chart(
+                    df, x_column, y_column, group_by, title
+                )
             elif chart_type == "heatmap":
                 result = DataVisualizer._create_heatmap(df, title)
             else:
-                result = {"success": False, "error": f"Unsupported chart type: {chart_type}"}
+                result = {
+                    "success": False,
+                    "error": f"Unsupported chart type: {chart_type}",
+                }
 
             return result
 
@@ -72,31 +86,38 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_bar_chart(df: pd.DataFrame, x_column: Optional[str],
-                         y_column: Optional[str], group_by: Optional[str],
-                         title: Optional[str]) -> Dict[str, Any]:
+    def _create_bar_chart(
+        df: pd.DataFrame,
+        x_column: Optional[str],
+        y_column: Optional[str],
+        group_by: Optional[str],
+        title: Optional[str],
+    ) -> Dict[str, Any]:
         """创建柱状图"""
         try:
             if not x_column:
                 x_column = df.columns[0]
             if not y_column:
                 # 选择第一个数值列
-                numeric_cols = df.select_dtypes(include=['number']).columns
+                numeric_cols = df.select_dtypes(include=["number"]).columns
                 y_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1]
 
-            fig = px.bar(df, x=x_column, y=y_column, color=group_by,
-                        title=title or f"{y_column} by {x_column}")
+            fig = px.bar(
+                df,
+                x=x_column,
+                y=y_column,
+                color=group_by,
+                title=title or f"{y_column} by {x_column}",
+            )
 
             fig.update_layout(
-                xaxis_title=x_column,
-                yaxis_title=y_column,
-                hovermode='x unified'
+                xaxis_title=x_column, yaxis_title=y_column, hovermode="x unified"
             )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -104,30 +125,37 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_line_chart(df: pd.DataFrame, x_column: Optional[str],
-                          y_column: Optional[str], group_by: Optional[str],
-                          title: Optional[str]) -> Dict[str, Any]:
+    def _create_line_chart(
+        df: pd.DataFrame,
+        x_column: Optional[str],
+        y_column: Optional[str],
+        group_by: Optional[str],
+        title: Optional[str],
+    ) -> Dict[str, Any]:
         """创建折线图"""
         try:
             if not x_column:
                 x_column = df.columns[0]
             if not y_column:
-                numeric_cols = df.select_dtypes(include=['number']).columns
+                numeric_cols = df.select_dtypes(include=["number"]).columns
                 y_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1]
 
-            fig = px.line(df, x=x_column, y=y_column, color=group_by,
-                         title=title or f"{y_column} over {x_column}")
+            fig = px.line(
+                df,
+                x=x_column,
+                y=y_column,
+                color=group_by,
+                title=title or f"{y_column} over {x_column}",
+            )
 
             fig.update_layout(
-                xaxis_title=x_column,
-                yaxis_title=y_column,
-                hovermode='x unified'
+                xaxis_title=x_column, yaxis_title=y_column, hovermode="x unified"
             )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -135,8 +163,12 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_pie_chart(df: pd.DataFrame, x_column: Optional[str],
-                         y_column: Optional[str], title: Optional[str]) -> Dict[str, Any]:
+    def _create_pie_chart(
+        df: pd.DataFrame,
+        x_column: Optional[str],
+        y_column: Optional[str],
+        title: Optional[str],
+    ) -> Dict[str, Any]:
         """创建饼图"""
         try:
             if not x_column:
@@ -147,15 +179,19 @@ class DataVisualizer:
                 df_agg = df.groupby(x_column)[y_column].sum().reset_index()
             else:
                 df_agg = df[x_column].value_counts().reset_index()
-                df_agg.columns = [x_column, 'value']
+                df_agg.columns = [x_column, "value"]
 
-            fig = px.pie(df_agg, values='value', names=x_column,
-                        title=title or f"Distribution of {x_column}")
+            fig = px.pie(
+                df_agg,
+                values="value",
+                names=x_column,
+                title=title or f"Distribution of {x_column}",
+            )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -163,27 +199,38 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_scatter_chart(df: pd.DataFrame, x_column: Optional[str],
-                             y_column: Optional[str], group_by: Optional[str],
-                             title: Optional[str]) -> Dict[str, Any]:
+    def _create_scatter_chart(
+        df: pd.DataFrame,
+        x_column: Optional[str],
+        y_column: Optional[str],
+        group_by: Optional[str],
+        title: Optional[str],
+    ) -> Dict[str, Any]:
         """创建散点图"""
         try:
             # 选择数值列
-            numeric_cols = df.select_dtypes(include=['number']).columns
+            numeric_cols = df.select_dtypes(include=["number"]).columns
 
             if not x_column:
                 x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
             if not y_column:
                 y_column = numeric_cols[1] if len(numeric_cols) > 1 else df.columns[1]
 
-            fig = px.scatter(df, x=x_column, y=y_column, color=group_by,
-                           title=title or f"{y_column} vs {x_column}",
-                           hover_data=[col for col in df.columns if col not in [x_column, y_column]])
+            fig = px.scatter(
+                df,
+                x=x_column,
+                y=y_column,
+                color=group_by,
+                title=title or f"{y_column} vs {x_column}",
+                hover_data=[
+                    col for col in df.columns if col not in [x_column, y_column]
+                ],
+            )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -191,22 +238,25 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_histogram(df: pd.DataFrame, x_column: Optional[str],
-                         title: Optional[str]) -> Dict[str, Any]:
+    def _create_histogram(
+        df: pd.DataFrame, x_column: Optional[str], title: Optional[str]
+    ) -> Dict[str, Any]:
         """创建直方图"""
         try:
             if not x_column:
                 # 选择第一个数值列
-                numeric_cols = df.select_dtypes(include=['number']).columns
+                numeric_cols = df.select_dtypes(include=["number"]).columns
                 x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
 
-            fig = px.histogram(df, x=x_column, title=title or f"Distribution of {x_column}")
+            fig = px.histogram(
+                df, x=x_column, title=title or f"Distribution of {x_column}"
+            )
             fig.update_layout(bargap=0.1)
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -214,22 +264,31 @@ class DataVisualizer:
             return {"success": False, "error": str(e)}
 
     @staticmethod
-    def _create_box_chart(df: pd.DataFrame, x_column: Optional[str],
-                         y_column: Optional[str], group_by: Optional[str],
-                         title: Optional[str]) -> Dict[str, Any]:
+    def _create_box_chart(
+        df: pd.DataFrame,
+        x_column: Optional[str],
+        y_column: Optional[str],
+        group_by: Optional[str],
+        title: Optional[str],
+    ) -> Dict[str, Any]:
         """创建箱线图"""
         try:
             if not x_column:
-                numeric_cols = df.select_dtypes(include=['number']).columns
+                numeric_cols = df.select_dtypes(include=["number"]).columns
                 x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
 
-            fig = px.box(df, y=x_column, x=group_by, color=group_by,
-                        title=title or f"Box plot of {x_column}")
+            fig = px.box(
+                df,
+                y=x_column,
+                x=group_by,
+                color=group_by,
+                title=title or f"Box plot of {x_column}",
+            )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -241,7 +300,7 @@ class DataVisualizer:
         """创建热力图"""
         try:
             # 只选择数值列
-            numeric_df = df.select_dtypes(include=['number'])
+            numeric_df = df.select_dtypes(include=["number"])
 
             if numeric_df.empty:
                 return {"success": False, "error": "No numeric columns for heatmap"}
@@ -249,13 +308,17 @@ class DataVisualizer:
             # 计算相关性矩阵
             corr_matrix = numeric_df.corr()
 
-            fig = px.imshow(corr_matrix, text_auto=True, aspect="auto",
-                          title=title or "Correlation Heatmap")
+            fig = px.imshow(
+                corr_matrix,
+                text_auto=True,
+                aspect="auto",
+                title=title or "Correlation Heatmap",
+            )
 
             return {
                 "success": True,
-                "chart_html": fig.to_html(include_plotlyjs='cdn'),
-                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder)
+                "chart_html": fig.to_html(include_plotlyjs="cdn"),
+                "chart_json": json.dumps(fig, cls=PlotlyJSONEncoder),
             }
 
         except Exception as e:
@@ -300,7 +363,7 @@ class DataVisualizer:
             summary_html += "</table>"
 
             # 数值列统计
-            numeric_cols = df.select_dtypes(include=['number']).columns
+            numeric_cols = df.select_dtypes(include=["number"]).columns
             if len(numeric_cols) > 0:
                 summary_html += "<h3>数值列统计</h3><table border='1' style='border-collapse: collapse; width: 100%;'><tr><th>列名</th><th>平均值</th><th>标准差</th><th>最小值</th><th>最大值</th></tr>"
 
@@ -315,10 +378,7 @@ class DataVisualizer:
 
             summary_html += "</div>"
 
-            return {
-                "success": True,
-                "summary_html": summary_html
-            }
+            return {"success": True, "summary_html": summary_html}
 
         except Exception as e:
             logger.error(f"Error creating summary stats: {str(e)}")

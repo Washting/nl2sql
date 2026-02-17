@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
-import { dataManager } from '../services/DataManager';
-import { sqlAgentManager } from '../services/SQLAgent';
+import { dataManager, sqlAgentManager } from '../services/instances';
+import { DataVisualizer } from '../services/DataVisualizer';
 import { v4 as uuidv4 } from 'uuid';
 
 export const apiRoutes = new Elysia({ prefix: '' })
@@ -11,134 +11,210 @@ export const apiRoutes = new Elysia({ prefix: '' })
             sources: sources
         };
     })
+
     .post('/upload', async ({ body }) => {
-        const file = (body as any).file;
-        if (!file) {
-            throw new Error("No file uploaded");
-        }
+        const file = body.file;
 
         try {
-            const metadata = await dataManager.processUpload(file);
+            const result = await dataManager.processUpload(file);
             return {
                 success: true,
-                file_id: metadata.file_id,
-                message: `File '${metadata.name}' uploaded successfully`,
-                headers: metadata.columns,
-                total_columns: metadata.columns.length,
-                estimated_rows: metadata.rows
+                file_id: result.metadata.file_id,
+                message: `File '${result.metadata.name}' uploaded successfully`,
+                headers: result.metadata.columns,
+                column_info: result.columnInfo || [],
+                total_columns: result.metadata.columns.length,
+                estimated_rows: result.metadata.rows
             };
         } catch (e: any) {
-            return { success: false, error: e.message };
+            return {
+                success: false,
+                error: e.message
+            };
         }
+    }, {
+        body: t.Object({
+            file: t.File({
+                type: ['text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+                maxSize: '10m'
+            })
+        })
     })
-    .post('/query', async ({ body }) => {
-        const { query, file_id, table_name, limit } = body as any;
 
-        // If table_name is provided, use SQL Agent
-        if (table_name) {
-            // Try SQL Agent first
-            const agentResult = await sqlAgentManager.query(query, table_name);
-            if (agentResult.success) {
+    .post('/query', async ({ body }) => {
+        const { query, table_name, limit } = body;
+        const startTime = Date.now();
+
+        try {
+            // Use SQL Agent for intelligent query processing
+            if (table_name) {
+                const agentResult = await sqlAgentManager.query(query, table_name);
                 return {
-                    success: true,
+                    success: agentResult.success,
                     answer: agentResult.answer,
-                    data: agentResult.data, // Might be empty if agent didn't return rows
-                    source: "langchain_agent"
+                    sql: agentResult.sql,
+                    reasoning: agentResult.reasoning,
+                    data: agentResult.data,
+                    returned_rows: agentResult.returned_rows,
+                    columns: agentResult.columns,
+                    total_rows: agentResult.total_rows,
+                    source: agentResult.source || "langchain_agent",
+                    executionTime: agentResult.executionTime,
+                    error: agentResult.error
                 };
             }
-        }
 
-        // Fallback to DataManager simple query
-        const result = dataManager.queryData(query, table_name, limit);
-        return result;
+            // Fallback to DataManager for queries without table
+            const result = await dataManager.queryData(query, undefined, limit);
+            const executionTime = Date.now() - startTime;
+
+            return {
+                ...result,
+                executionTime,
+                source: "data_manager_fallback"
+            };
+        } catch (e: any) {
+            const executionTime = Date.now() - startTime;
+            return {
+                success: false,
+                error: e.message,
+                answer: `Error: ${e.message}`,
+                data: [],
+                returned_rows: 0,
+                columns: [],
+                total_rows: 0,
+                executionTime
+            };
+        }
+    }, {
+        body: t.Object({
+            query: t.String({ minLength: 1 }),
+            table_name: t.Optional(t.String({
+                pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$'
+            })),
+            file_id: t.Optional(t.String({ format: 'uuid' })),
+            limit: t.Optional(t.Integer({ minimum: 1, maximum: 1000 }))
+        })
     })
+
     .post('/chat', async ({ body }) => {
-        const { message, session_id } = body as any;
+        const { message, session_id, table_name } = body;
         const sessionId = session_id || uuidv4();
 
-        let response = "";
-        const msg = message.toLowerCase();
+        try {
+            // Try to use SQL Agent for intelligent responses
+            if (table_name) {
+                const agentResult = await sqlAgentManager.query(message, table_name);
 
-        if (msg.includes("你好") || msg.includes("hi")) {
-            const sources = dataManager.getTableList();
-            response = `您好！我是您的数据分析助手。当前可用的数据源有：\n` +
-                sources.map(s => `• ${s.name}`).join('\n') +
-                `\n\n请问您想了解哪些数据？`;
-        } else if (msg.includes("数据源") || msg.includes("数据表")) {
-            const sources = dataManager.getTableList();
-            response = "当前数据源列表：\n\n" +
-                sources.map(s => `📊 ${s.name}\n   • 描述：${s.description}\n   • 行数：${s.rows}\n   • 列数：${s.columns.length}\n   • 来源：${s.source}`).join('\n\n');
-        } else if (msg.includes("销售")) {
-            // Query sales data
-            const result = dataManager.queryData("销售总额", "sales_data"); // sales_data might not exist if not loaded, but logic is here
-            if (result.success && result.data && result.data.length > 0) {
-                // Calculate total if possible, or just show what we have
-                // Simplified logic compared to Python which did specific sum
-                response = `根据销售数据分析：\n• 记录数：${result.total_rows}条\n(详细统计需使用具体查询)`;
-            } else {
-                response = "抱歉，未找到销售数据";
+                return {
+                    success: true,
+                    message: agentResult.answer || message,
+                    session_id: sessionId,
+                    data: agentResult.data,
+                    visualization: null,
+                    error: agentResult.error
+                };
             }
-        } else if (msg.includes("产品")) {
-            const result = dataManager.queryData("前10个产品", "erp_products");
-            if (result.success && result.data) {
-                response = `产品列表（前10个）：\n` +
-                    result.data.slice(0, 5).map((item: any) => `• ${item.name || 'N/A'} - ¥${item.price || 0}`).join('\n');
+
+            // Fallback to simple responses for greetings and general info
+            const msg = message.toLowerCase();
+            let response = "";
+
+            if (msg.includes("你好") || msg.includes("hi") || msg.includes("hello")) {
+                const sources = dataManager.getTableList();
+                response = `您好！我是您的数据分析助手。当前可用的数据源有：\n` +
+                    sources.map(s => `• ${s.name} (${s.rows}行)`).join('\n') +
+                    `\n\n请指定表名进行查询，例如："查询erp_products表的所有数据"`;
+            } else if (msg.includes("数据源") || msg.includes("数据表") || msg.includes("tables")) {
+                const sources = dataManager.getTableList();
+                response = "当前数据源列表：\n\n" +
+                    sources.map(s =>
+                        `📊 ${s.name}\n` +
+                        `   表名：${s.table}\n` +
+                        `   描述：${s.description}\n` +
+                        `   行数：${s.rows}\n` +
+                        `   列数：${s.columns.length}\n` +
+                        `   来源：${s.source}`
+                    ).join('\n\n');
             } else {
-                response = "抱歉，未找到产品数据";
+                response = "请指定要查询的数据表。例如：\"查询erp_products表\" 或 \"显示erp_orders的前10条记录\"。";
             }
-        } else {
-            // General query
-            const result = dataManager.queryData(message);
-            if (result.success) {
-                response = `根据您的问题「${message}」，我为您找到以下信息：\n\n${result.answer}`;
-                if (result.data && result.data.length > 0) {
-                    response += `\n\n共找到 ${result.total_rows} 条相关记录`;
-                }
-            } else {
-                response = `抱歉，无法处理您的问题：${message}`;
-            }
+
+            return {
+                success: true,
+                message: response,
+                session_id: sessionId,
+                data: [],
+                visualization: null
+            };
+        } catch (e: any) {
+            return {
+                success: false,
+                message: `抱歉，处理您的问题时出错：${e.message}`,
+                session_id: sessionId,
+                data: [],
+                error: e.message
+            };
         }
-
-        return {
-            success: true,
-            message: response,
-            session_id: sessionId,
-            data: []
-        };
+    }, {
+        body: t.Object({
+            message: t.String({ minLength: 1 }),
+            table_name: t.Optional(t.String()),
+            session_id: t.Optional(t.String({ format: 'uuid' }))
+        })
     })
+
     .post('/visualize', async ({ body }) => {
-        const { chart_type, table_name, x_column, y_column } = body as any;
-        const type = chart_type || 'bar';
+        const { chart_type, table_name, x_column, y_column, title, limit } = body;
 
-        const chartHtml = `
-        <div style="padding: 20px;">
-            <h3>数据可视化图表 (${type})</h3>
-            <div style="margin-top: 20px;">
-                <canvas id="chart" width="400" height="300"></canvas>
-            </div>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <script>
-                // 这里是实际的图表渲染代码
-                // 由于是测试版本，仅显示占位符
-                const ctx = document.getElementById('chart').getContext('2d');
-                ctx.font = '20px Arial';
-                ctx.fillStyle = '#ccc';
-                ctx.textAlign = 'center';
-                ctx.fillText('图表区域 (' + '${type}' + ')', 200, 150);
-            </script>
-            <p style="margin-top: 10px; color: #666;">
-                表名: ${table_name || '未指定'} |
-                X轴: ${x_column || '自动'} |
-                Y轴: ${y_column || '自动'}
-            </p>
-        </div>
-        `;
+        try {
+            // Get data from table
+            const result = await dataManager.queryData(
+                `SELECT * FROM ${table_name}`,
+                table_name,
+                limit || 1000
+            );
 
-        return {
-            success: true,
-            chart_html: chartHtml
-        };
+            if (!result.success || !result.data || result.data.length === 0) {
+                return {
+                    success: false,
+                    error: "No data available for visualization"
+                };
+            }
+
+            // Create visualization using DataVisualizer
+            const vizResult = DataVisualizer.createChart(
+                result.data,
+                chart_type || 'bar',
+                x_column,
+                y_column,
+                title
+            );
+
+            return vizResult;
+        } catch (e: any) {
+            return {
+                success: false,
+                error: e.message
+            };
+        }
+    }, {
+        body: t.Object({
+            chart_type: t.Optional(t.Union([
+                t.Literal('bar'),
+                t.Literal('line'),
+                t.Literal('pie'),
+                t.Literal('scatter'),
+                t.Literal('histogram')
+            ])),
+            table_name: t.String({ minLength: 1 }),
+            x_column: t.Optional(t.String()),
+            y_column: t.Optional(t.String()),
+            title: t.Optional(t.String({ maxLength: 200 })),
+            limit: t.Optional(t.Integer({ minimum: 1, maximum: 1000 }))
+        })
     })
+
     .get('/files', () => {
         const files = dataManager.getTableList().filter(t => t.source === 'upload');
         return {
@@ -150,16 +226,28 @@ export const apiRoutes = new Elysia({ prefix: '' })
             }))
         };
     })
-    .get('/tables/:tableName', ({ params: { tableName } }) => {
+
+    .get('/tables/:tableName', async ({ params: { tableName } }) => {
         const info = dataManager.getTableInfo(tableName);
         if (info) {
             // Get sample data
-            const result = dataManager.queryData("SELECT * FROM " + tableName + " LIMIT 5", tableName, 5);
+            const result = await dataManager.queryData(`SELECT * FROM ${tableName}`, tableName, 5);
             return {
                 success: true,
                 info: info,
-                sample_data: result.data || []
+                sample_data: result.data || [],
+                columns: info.columns,
+                row_count: info.rows
             };
         }
-        return { success: false, error: "Table not found" };
-    });
+        return {
+            success: false,
+            error: "Table not found"
+        };
+    }, {
+        params: t.Object({
+            tableName: t.String({
+                pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$'
+            })
+        })
+    })

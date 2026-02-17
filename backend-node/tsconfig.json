@@ -10,9 +10,7 @@
         "forceConsistentCasingInFileNames": true,
         "outDir": "./dist",
         "rootDir": "./src",
-        "types": [
-            "bun-types"
-        ]
+        "types": []
     },
     "include": [
         "src/**/*"

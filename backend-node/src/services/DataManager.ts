@@ -1,9 +1,16 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
-import { v4 as uuidv4 } from 'uuid';
-import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
+import { DataSource } from "typeorm";
+import { v4 as uuidv4 } from "uuid";
+import Papa from "papaparse";
+import * as XLSX from "xlsx";
+import { inferColumnDefinitions, cleanColumnName, createDynamicEntity } from "../entities/EntityFactory";
+
+export interface ColumnInfo {
+    name: string;
+    type: 'string' | 'number' | 'date' | 'boolean';
+    nullable: boolean;
+    unique: number;
+    sample_values: any[];
+}
 
 export interface TableMetadata {
     name: string;
@@ -16,30 +23,19 @@ export interface TableMetadata {
 }
 
 export class DataManager {
-    private db: Database.Database;
-    private dataDir: string;
+    private dataSource: DataSource;
     private metadata: Record<string, TableMetadata> = {};
-    private dbPath: string;
 
-    constructor(dataDir: string = 'data') {
-        this.dataDir = dataDir;
-        this.dbPath = path.join(this.dataDir, 'sales_data.db');
-
-        // Ensure data directory exists
-        if (!fs.existsSync(this.dataDir)) {
-            fs.mkdirSync(this.dataDir, { recursive: true });
-        }
-
-        this.db = new Database(this.dbPath);
+    constructor(dataSource: DataSource) {
+        this.dataSource = dataSource;
         this.initializeData();
     }
 
-    private initializeData() {
-        this.createErpData();
-        // Load CSVs if present (skipping for now as we don't have the file, but logic can be added)
+    private async initializeData() {
+        await this.createErpData();
     }
 
-    private createErpData() {
+    private async createErpData() {
         // 1. Products
         const products = [
             { product_id: 1, name: "iPhone 15 Pro", category: "手机", price: 8999.00, stock: 500, supplier: "Apple" },
@@ -54,7 +50,7 @@ export class DataManager {
             { product_id: 10, name: "ThinkPad X1 Carbon", category: "笔记本", price: 12999.00, stock: 350, supplier: "Lenovo" }
         ];
 
-        this.createTable('erp_products', products, {
+        await this.createTable('erp_products', products, {
             name: "ERP产品表",
             description: "企业资源规划系统中的产品数据",
             source: "mock"
@@ -69,7 +65,7 @@ export class DataManager {
             { customer_id: 5, name: "陈七", email: "chenqi@email.com", city: "杭州", level: "VIP", total_orders: 28 },
         ];
 
-        this.createTable('erp_customers', customers, {
+        await this.createTable('erp_customers', customers, {
             name: "ERP客户表",
             description: "企业资源规划系统中的客户数据",
             source: "mock"
@@ -100,14 +96,17 @@ export class DataManager {
             });
         }
 
-        this.createTable('erp_orders', orders, {
+        await this.createTable('erp_orders', orders, {
             name: "ERP订单表",
             description: "企业资源规划系统中的订单数据",
             source: "mock"
         });
     }
 
-    public async processUpload(file: File): Promise<TableMetadata> {
+    public async processUpload(file: File): Promise<{
+        metadata: TableMetadata;
+        columnInfo: ColumnInfo[];
+    }> {
         const buffer = await file.arrayBuffer();
         const content = new Uint8Array(buffer);
         const filename = file.name;
@@ -128,48 +127,122 @@ export class DataManager {
             throw new Error("Unsupported file format");
         }
 
-        this.createTable(tableName, data, {
+        // Clean column names
+        data = data.map(row => {
+            const cleanedRow: any = {};
+            Object.keys(row).forEach(key => {
+                cleanedRow[cleanColumnName(key)] = row[key];
+            });
+            return cleanedRow;
+        });
+
+        // Get column info before creating table
+        const columnInfo = this.getColumnInfo(data);
+
+        await this.createTable(tableName, data, {
             name: filename,
             description: "User uploaded file",
             source: "upload",
             file_id: fileId
         });
 
-        return this.metadata[tableName];
+        return {
+            metadata: this.metadata[tableName],
+            columnInfo
+        };
     }
 
-    private createTable(tableName: string, data: any[], meta: Partial<TableMetadata>) {
-        if (data.length === 0) return;
+    private getColumnInfo(data: any[]): ColumnInfo[] {
+        if (data.length === 0) return [];
 
         const columns = Object.keys(data[0]);
+        return columns.map(col => {
+            const values = data.map(row => row[col]);
+            const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
+            const uniqueCount = new Set(values).size;
 
-        // Create table
-        const colDefs = columns.map(c => `"${c}" TEXT`).join(', '); // Simplified: all TEXT for now
-        this.db.exec(`DROP TABLE IF EXISTS "${tableName}"`);
-        this.db.exec(`CREATE TABLE "${tableName}" (${colDefs})`);
-
-        // Insert data
-        const placeholders = columns.map(() => '?').join(', ');
-        const insert = this.db.prepare(`INSERT INTO "${tableName}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`);
-
-        const insertMany = this.db.transaction((rows) => {
-            for (const row of rows) {
-                const values = columns.map(c => row[c]);
-                insert.run(values);
-            }
+            return {
+                name: col,
+                type: this.inferColumnType(values),
+                nullable: nonNullValues.length < data.length,
+                unique: uniqueCount,
+                sample_values: values.slice(0, 5).filter(v => v !== null && v !== undefined && v !== '')
+            };
         });
+    }
 
-        insertMany(data);
+    private inferColumnType(values: any[]): 'string' | 'number' | 'date' | 'boolean' {
+        const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
 
-        this.metadata[tableName] = {
-            name: meta.name || tableName,
-            table: tableName,
-            rows: data.length,
-            columns: columns,
-            description: meta.description || "",
-            source: meta.source as any || "mock",
-            file_id: meta.file_id
-        };
+        if (nonNullValues.length === 0) return 'string';
+
+        // Check for boolean
+        const boolCount = nonNullValues.filter(v =>
+            typeof v === 'boolean' ||
+            String(v).toLowerCase() === 'true' ||
+            String(v).toLowerCase() === 'false' ||
+            v === 0 || v === 1
+        ).length;
+        if (boolCount / nonNullValues.length > 0.8) return 'boolean';
+
+        // Check for number
+        const numCount = nonNullValues.filter(v => {
+            const num = Number(v);
+            return !isNaN(num) && isFinite(num) && String(v).trim() !== '';
+        }).length;
+        if (numCount / nonNullValues.length > 0.8) return 'number';
+
+        // Check for date
+        const dateCount = nonNullValues.filter(v => {
+            const date = new Date(v);
+            return !isNaN(date.getTime());
+        }).length;
+        if (dateCount / nonNullValues.length > 0.8) return 'date';
+
+        return 'string';
+    }
+
+    private async createTable(tableName: string, data: any[], meta: Partial<TableMetadata>) {
+        if (data.length === 0) return;
+
+        const queryRunner = this.dataSource.createQueryRunner();
+
+        try {
+            // Use raw SQL to create table (more flexible than TypeORM's createTable)
+            const columns = Object.keys(data[0]);
+            const columnDefs = columns.map(col => `"${col}" TEXT`).join(', ');
+
+            // Drop table if exists
+            await queryRunner.query(`DROP TABLE IF EXISTS "${tableName}"`);
+
+            // Create table
+            await queryRunner.query(`CREATE TABLE "${tableName}" (${columnDefs})`);
+
+            // Insert data in batches
+            const placeholders = columns.map(() => '?').join(', ');
+            const insertSQL = `INSERT INTO "${tableName}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders})`;
+
+            for (const row of data) {
+                const values = Object.values(row);
+                await queryRunner.query(insertSQL, values);
+            }
+
+            // Store metadata
+            this.metadata[tableName] = {
+                name: meta.name || tableName,
+                table: tableName,
+                rows: data.length,
+                columns: columns,
+                description: meta.description || "",
+                source: meta.source as any || "mock",
+                file_id: meta.file_id
+            };
+
+            console.log(`[DataManager] Created table ${tableName} with ${data.length} rows`);
+
+        } finally {
+            await queryRunner.release();
+        }
     }
 
     public getTableList(): TableMetadata[] {
@@ -180,21 +253,19 @@ export class DataManager {
         return this.metadata[tableName] || null;
     }
 
-    public getDbPath(): string {
-        return this.dbPath;
+    public getDataSource(): DataSource {
+        return this.dataSource;
     }
 
-    public getDb(): Database.Database {
-        return this.db;
-    }
+    public async queryData(query: string, tableName?: string, limit: number = 100): any {
+        const queryRunner = this.dataSource.createQueryRunner();
 
-    // Fallback query logic (simplified)
-    public queryData(query: string, tableName?: string, limit: number = 100): any {
-        // This is a placeholder for the simple regex query logic
-        // For now, we'll just return a basic SELECT if table is provided
-        if (tableName && this.metadata[tableName]) {
-            try {
-                const rows = this.db.prepare(`SELECT * FROM "${tableName}" LIMIT ?`).all(limit);
+        try {
+            if (tableName && this.metadata[tableName]) {
+                const rows = await queryRunner.query(
+                    `SELECT * FROM "${tableName}" LIMIT ?`,
+                    [limit]
+                );
                 return {
                     success: true,
                     data: rows,
@@ -202,12 +273,29 @@ export class DataManager {
                     total_rows: this.metadata[tableName].rows,
                     answer: `Returned ${rows.length} rows from ${tableName}`
                 };
-            } catch (e: any) {
-                return { success: false, error: e.message };
             }
+
+            return { success: false, error: "Table not found or query not understood" };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        } finally {
+            await queryRunner.release();
         }
-        return { success: false, error: "Table not found or query not understood" };
+    }
+
+    public getDbPath(): string {
+        // Extract database path from TypeORM DataSource
+        return (this.dataSource.options as any).database || 'data/sales_data.db';
+    }
+
+    public async getDb(): Promise<any> {
+        // Return the TypeORM DataSource for backward compatibility
+        return this.dataSource;
     }
 }
 
-export const dataManager = new DataManager();
+// Export factory function
+export function createDataManager(dataSource: DataSource): DataManager {
+    return new DataManager(dataSource);
+}
+
