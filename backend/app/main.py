@@ -304,6 +304,8 @@ async def upload_file(file: UploadFile = File(...)):
     """
     try:
         # 检查文件类型
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
         file_type = file.filename.split(".")[-1].lower()
         if file_type not in ["csv", "xlsx", "xls"]:
             raise HTTPException(status_code=400, detail="Unsupported file type")
@@ -336,10 +338,12 @@ async def upload_file(file: UploadFile = File(...)):
         return FileUploadResponse(
             success=True,
             table_name=import_result.get("table_name"),
+            table_comment_cn=import_result.get("table_comment_cn"),
             message=f"File '{file.filename}' uploaded successfully",
-            headers=header_result["headers"],
-            column_info=header_result["column_info"],
-            total_columns=header_result["total_columns"],
+            headers=import_result.get("headers", header_result["headers"]),
+            column_comments=import_result.get("column_comments"),
+            column_info=import_result.get("column_info", header_result["column_info"]),
+            total_columns=import_result.get("total_columns", header_result["total_columns"]),
             estimated_rows=import_result.get(
                 "estimated_rows", header_result["estimated_rows"]
             ),
@@ -481,7 +485,9 @@ async def chat_with_data(request: ChatRequest):
         if not table_name:
             raise HTTPException(status_code=400, detail="table_name is required")
 
-        query_request = QueryRequest(query=request.message, table_name=table_name)
+        query_request = QueryRequest(
+            query=request.message, table_name=table_name, columns=None, limit=None
+        )
         _, agent = _resolve_or_create_agent(query_request)
 
         # 执行查询

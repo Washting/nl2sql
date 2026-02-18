@@ -13,8 +13,10 @@ class FileType(str, Enum):
 class FileUploadResponse(BaseModel):
     success: bool
     table_name: Optional[str] = None
+    table_comment_cn: Optional[str] = None
     message: str
     headers: Optional[List[str]] = None
+    column_comments: Optional[Dict[str, str]] = None
     column_info: Optional[List[Dict[str, Any]]] = None
     total_columns: Optional[int] = None
     estimated_rows: Optional[int] = None

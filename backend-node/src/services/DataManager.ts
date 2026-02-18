@@ -2,7 +2,8 @@ import { DataSource } from "typeorm";
 import { v4 as uuidv4 } from "uuid";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { inferColumnDefinitions, cleanColumnName, createDynamicEntity } from "../entities/EntityFactory";
+import { ChatOpenAI } from "@langchain/openai";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 export interface ColumnInfo {
     name: string;
@@ -10,6 +11,8 @@ export interface ColumnInfo {
     nullable: boolean;
     unique: number;
     sample_values: any[];
+    comment_cn?: string;
+    original_name?: string;
 }
 
 export interface TableMetadata {
@@ -20,15 +23,46 @@ export interface TableMetadata {
     description: string;
     source: 'csv' | 'mock' | 'upload' | 'derived';
     file_id?: string;
+    table_comment_cn?: string;
+    column_comments?: Record<string, string>;
+    column_original_names?: Record<string, string>;
+}
+
+interface NamingColumnSuggestion {
+    source_name: string;
+    column_name_en: string;
+    column_comment_cn: string;
+}
+
+interface NamingSuggestion {
+    table_name_en: string;
+    table_comment_cn: string;
+    columns: NamingColumnSuggestion[];
 }
 
 export class DataManager {
     private dataSource: DataSource;
     private metadata: Record<string, TableMetadata> = {};
+    private llm?: ChatOpenAI;
 
     constructor(dataSource: DataSource) {
         this.dataSource = dataSource;
+        this.initializeLLM();
         this.initializeData();
+    }
+
+    private initializeLLM() {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) return;
+
+        this.llm = new ChatOpenAI({
+            openAIApiKey: apiKey,
+            configuration: {
+                baseURL: process.env.OPENAI_BASE_URL,
+            },
+            modelName: process.env.DEFAULT_MODEL || "gpt-4",
+            temperature: 0,
+        });
     }
 
     private async initializeData() {
@@ -111,39 +145,50 @@ export class DataManager {
         const content = new Uint8Array(buffer);
         const filename = file.name;
         const fileId = uuidv4();
-        const tableName = `file_${fileId.replace(/-/g, '_')}`;
-
-        let data: any[] = [];
+        let rawData: Record<string, any>[] = [];
 
         if (filename.endsWith('.csv')) {
             const text = new TextDecoder().decode(content);
             const result = Papa.parse(text, { header: true, skipEmptyLines: true });
-            data = result.data as any[];
+            rawData = result.data as Record<string, any>[];
         } else if (filename.endsWith('.xlsx') || filename.endsWith('.xls')) {
             const workbook = XLSX.read(content, { type: 'array' });
             const sheetName = workbook.SheetNames[0];
-            data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+            rawData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]) as Record<string, any>[];
         } else {
             throw new Error("Unsupported file format");
         }
 
-        // Clean column names
-        data = data.map(row => {
-            const cleanedRow: any = {};
-            Object.keys(row).forEach(key => {
-                cleanedRow[cleanColumnName(key)] = row[key];
-            });
-            return cleanedRow;
-        });
+        if (!rawData.length) {
+            throw new Error("Uploaded file is empty");
+        }
 
-        // Get column info before creating table
-        const columnInfo = this.getColumnInfo(data);
+        const originalColumns = this.collectOriginalColumns(rawData);
+        const namingSuggestion = await this.generateNamingSuggestion(
+            filename,
+            originalColumns,
+            rawData.slice(0, 3),
+        );
+        const tableName = await this.generateUniqueTableName(
+            namingSuggestion?.table_name_en || this.toSqlIdentifier(filename, "uploaded_table", "uploaded"),
+        );
+        const {
+            mappedRows,
+            columnComments,
+            columnOriginalNames,
+        } = this.mapColumns(rawData, originalColumns, namingSuggestion?.columns || []);
 
-        await this.createTable(tableName, data, {
-            name: filename,
-            description: "User uploaded file",
+        const tableCommentCn = namingSuggestion?.table_comment_cn || filename;
+        const columnInfo = this.getColumnInfo(mappedRows, columnComments, columnOriginalNames);
+
+        await this.createTable(tableName, mappedRows, {
+            name: tableCommentCn,
+            description: `上传文件：${filename}`,
             source: "upload",
-            file_id: fileId
+            file_id: fileId,
+            table_comment_cn: tableCommentCn,
+            column_comments: columnComments,
+            column_original_names: columnOriginalNames,
         });
 
         return {
@@ -152,7 +197,205 @@ export class DataManager {
         };
     }
 
-    private getColumnInfo(data: any[]): ColumnInfo[] {
+    private collectOriginalColumns(rows: Record<string, any>[]): string[] {
+        const keys = new Set<string>();
+        for (const row of rows) {
+            Object.keys(row).forEach((key) => keys.add(key));
+        }
+        return [...keys];
+    }
+
+    private mapColumns(
+        rawData: Record<string, any>[],
+        originalColumns: string[],
+        suggestions: NamingColumnSuggestion[],
+    ): {
+        mappedRows: Record<string, any>[];
+        columnComments: Record<string, string>;
+        columnOriginalNames: Record<string, string>;
+    } {
+        const suggestionBySource = new Map<string, NamingColumnSuggestion>();
+        suggestions.forEach((item) => suggestionBySource.set(item.source_name, item));
+
+        const usedNames = new Set<string>();
+        const sourceToTarget = new Map<string, string>();
+        const columnComments: Record<string, string> = {};
+        const columnOriginalNames: Record<string, string> = {};
+
+        originalColumns.forEach((sourceName, idx) => {
+            const suggestion = suggestionBySource.get(sourceName);
+            let targetName = this.toSqlIdentifier(
+                suggestion?.column_name_en || sourceName,
+                `column_${idx + 1}`,
+                "col",
+            );
+
+            while (usedNames.has(targetName)) {
+                targetName = `${targetName}_${idx + 1}`;
+            }
+
+            usedNames.add(targetName);
+            sourceToTarget.set(sourceName, targetName);
+            columnComments[targetName] = suggestion?.column_comment_cn || sourceName;
+            columnOriginalNames[targetName] = sourceName;
+        });
+
+        const mappedRows = rawData.map((row) => {
+            const nextRow: Record<string, any> = {};
+            originalColumns.forEach((sourceName) => {
+                const targetName = sourceToTarget.get(sourceName);
+                if (!targetName) return;
+                nextRow[targetName] = row[sourceName];
+            });
+            return nextRow;
+        });
+
+        return { mappedRows, columnComments, columnOriginalNames };
+    }
+
+    private async generateNamingSuggestion(
+        filename: string,
+        originalColumns: string[],
+        sampleRows: Record<string, any>[],
+    ): Promise<NamingSuggestion | null> {
+        if (!this.llm || !originalColumns.length) {
+            return null;
+        }
+
+        const promptPayload = {
+            filename,
+            columns: originalColumns,
+            sample_rows: sampleRows,
+        };
+
+        try {
+            const response = await this.llm.invoke([
+                new SystemMessage(
+                    "You are a data modeling assistant. Generate legal SQL identifiers in snake_case English and Chinese comments in one JSON response."
+                ),
+                new HumanMessage(
+                    `Generate table and column naming plan in strict JSON with this schema:
+{
+  "table_name_en": "sales_orders",
+  "table_comment_cn": "销售订单",
+  "columns": [
+    {
+      "source_name": "原字段名",
+      "column_name_en": "order_id",
+      "column_comment_cn": "订单编号"
+    }
+  ]
+}
+Rules:
+1) table_name_en and column_name_en must match ^[a-zA-Z_][a-zA-Z0-9_]*$, lowercase preferred.
+2) Keep semantic meaning of source names.
+3) Return only JSON, no markdown.
+Input:
+${JSON.stringify(promptPayload)}`
+                ),
+            ]);
+
+            const parsed = this.parseNamingSuggestion(this.extractContentText(response.content));
+            return parsed;
+        } catch (error) {
+            console.warn("[DataManager] LLM naming fallback:", error);
+            return null;
+        }
+    }
+
+    private extractContentText(content: unknown): string {
+        if (typeof content === "string") return content;
+        if (Array.isArray(content)) {
+            return content
+                .map((item) => (typeof item === "string" ? item : (item as any)?.text || ""))
+                .join("");
+        }
+        return "";
+    }
+
+    private parseNamingSuggestion(raw: string): NamingSuggestion | null {
+        const cleaned = raw.trim().replace(/^```json/i, "").replace(/^```/i, "").replace(/```$/, "").trim();
+        const start = cleaned.indexOf("{");
+        const end = cleaned.lastIndexOf("}");
+        const jsonText = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+        let parsed: Partial<NamingSuggestion>;
+        try {
+            parsed = JSON.parse(jsonText) as Partial<NamingSuggestion>;
+        } catch {
+            return null;
+        }
+
+        if (!parsed.table_name_en || !Array.isArray(parsed.columns)) {
+            return null;
+        }
+
+        const columns: NamingColumnSuggestion[] = parsed.columns
+            .filter((item): item is NamingColumnSuggestion =>
+                !!item &&
+                typeof item.source_name === "string" &&
+                typeof item.column_name_en === "string" &&
+                typeof item.column_comment_cn === "string",
+            );
+
+        if (!columns.length) {
+            return null;
+        }
+
+        return {
+            table_name_en: parsed.table_name_en,
+            table_comment_cn: parsed.table_comment_cn || parsed.table_name_en,
+            columns,
+        };
+    }
+
+    private toSqlIdentifier(value: string, fallback: string, prefix: string): string {
+        const base = value
+            .replace(/\.[^.]+$/, "")
+            .normalize("NFKD")
+            .replace(/[^\w\s-]/g, "_")
+            .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+            .replace(/[\s-]+/g, "_")
+            .replace(/_+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .toLowerCase();
+
+        const normalized = base || fallback;
+        const safe = /^[a-zA-Z_]/.test(normalized) ? normalized : `${prefix}_${normalized}`;
+        return safe.replace(/[^a-zA-Z0-9_]/g, "_");
+    }
+
+    private async generateUniqueTableName(baseName: string): Promise<string> {
+        const safeBaseName = this.toSqlIdentifier(baseName, "uploaded_table", "uploaded");
+        let candidate = safeBaseName;
+        let suffix = 1;
+
+        while (await this.tableExists(candidate)) {
+            suffix += 1;
+            candidate = `${safeBaseName}_${suffix}`;
+        }
+
+        return candidate;
+    }
+
+    private async tableExists(tableName: string): Promise<boolean> {
+        if (this.metadata[tableName]) return true;
+        const queryRunner = this.dataSource.createQueryRunner();
+        try {
+            const result = await queryRunner.query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                [tableName],
+            );
+            return Array.isArray(result) && result.length > 0;
+        } finally {
+            await queryRunner.release();
+        }
+    }
+
+    private getColumnInfo(
+        data: any[],
+        columnComments: Record<string, string> = {},
+        columnOriginalNames: Record<string, string> = {},
+    ): ColumnInfo[] {
         if (data.length === 0) return [];
 
         const columns = Object.keys(data[0]);
@@ -166,7 +409,9 @@ export class DataManager {
                 type: this.inferColumnType(values),
                 nullable: nonNullValues.length < data.length,
                 unique: uniqueCount,
-                sample_values: values.slice(0, 5).filter(v => v !== null && v !== undefined && v !== '')
+                sample_values: values.slice(0, 5).filter(v => v !== null && v !== undefined && v !== ''),
+                comment_cn: columnComments[col],
+                original_name: columnOriginalNames[col],
             };
         });
     }
@@ -235,7 +480,10 @@ export class DataManager {
                 columns: columns,
                 description: meta.description || "",
                 source: meta.source as any || "mock",
-                file_id: meta.file_id
+                file_id: meta.file_id,
+                table_comment_cn: meta.table_comment_cn,
+                column_comments: meta.column_comments || {},
+                column_original_names: meta.column_original_names || {},
             };
 
             console.log(`[DataManager] Created table ${tableName} with ${data.length} rows`);
@@ -257,7 +505,7 @@ export class DataManager {
         return this.dataSource;
     }
 
-    public async queryData(query: string, tableName?: string, limit: number = 100): any {
+    public async queryData(query: string, tableName?: string, limit: number = 100): Promise<any> {
         const queryRunner = this.dataSource.createQueryRunner();
 
         try {
@@ -298,4 +546,3 @@ export class DataManager {
 export function createDataManager(dataSource: DataSource): DataManager {
     return new DataManager(dataSource);
 }
-

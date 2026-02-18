@@ -20,9 +20,12 @@ export const apiRoutes = new Elysia({ prefix: '' })
             return {
                 success: true,
                 file_id: result.metadata.file_id,
+                table_name: result.metadata.table,
+                table_comment_cn: result.metadata.table_comment_cn,
                 message: `File '${result.metadata.name}' uploaded successfully`,
                 headers: result.metadata.columns,
                 column_info: result.columnInfo || [],
+                column_comments: result.metadata.column_comments || {},
                 total_columns: result.metadata.columns.length,
                 estimated_rows: result.metadata.rows
             };

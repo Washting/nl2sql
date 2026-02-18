@@ -21,6 +21,18 @@ class DataVisualizer:
     """数据可视化工具类"""
 
     @staticmethod
+    def _column_name(df: pd.DataFrame, index: int) -> str:
+        columns = [str(col) for col in df.columns]
+        if not columns:
+            return ""
+        safe_index = min(max(index, 0), len(columns) - 1)
+        return columns[safe_index]
+
+    @staticmethod
+    def _numeric_column_names(df: pd.DataFrame) -> List[str]:
+        return [str(col) for col in df.select_dtypes(include=["number"]).columns]
+
+    @staticmethod
     def create_chart(
         data: List[Dict[str, Any]],
         chart_type: str,
@@ -96,11 +108,11 @@ class DataVisualizer:
         """创建柱状图"""
         try:
             if not x_column:
-                x_column = df.columns[0]
+                x_column = DataVisualizer._column_name(df, 0)
             if not y_column:
                 # 选择第一个数值列
-                numeric_cols = df.select_dtypes(include=["number"]).columns
-                y_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1]
+                numeric_cols = DataVisualizer._numeric_column_names(df)
+                y_column = numeric_cols[0] if len(numeric_cols) > 0 else DataVisualizer._column_name(df, 1)
 
             fig = px.bar(
                 df,
@@ -135,10 +147,10 @@ class DataVisualizer:
         """创建折线图"""
         try:
             if not x_column:
-                x_column = df.columns[0]
+                x_column = DataVisualizer._column_name(df, 0)
             if not y_column:
-                numeric_cols = df.select_dtypes(include=["number"]).columns
-                y_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[1]
+                numeric_cols = DataVisualizer._numeric_column_names(df)
+                y_column = numeric_cols[0] if len(numeric_cols) > 0 else DataVisualizer._column_name(df, 1)
 
             fig = px.line(
                 df,
@@ -172,11 +184,11 @@ class DataVisualizer:
         """创建饼图"""
         try:
             if not x_column:
-                x_column = df.columns[0]
+                x_column = DataVisualizer._column_name(df, 0)
 
             # 如果指定了y_column，先聚合
             if y_column and y_column != x_column:
-                df_agg = df.groupby(x_column)[y_column].sum().reset_index()
+                df_agg = df.groupby(x_column, as_index=False)[y_column].sum()
             else:
                 df_agg = df[x_column].value_counts().reset_index()
                 df_agg.columns = [x_column, "value"]
@@ -209,12 +221,12 @@ class DataVisualizer:
         """创建散点图"""
         try:
             # 选择数值列
-            numeric_cols = df.select_dtypes(include=["number"]).columns
+            numeric_cols = DataVisualizer._numeric_column_names(df)
 
             if not x_column:
-                x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
+                x_column = numeric_cols[0] if len(numeric_cols) > 0 else DataVisualizer._column_name(df, 0)
             if not y_column:
-                y_column = numeric_cols[1] if len(numeric_cols) > 1 else df.columns[1]
+                y_column = numeric_cols[1] if len(numeric_cols) > 1 else DataVisualizer._column_name(df, 1)
 
             fig = px.scatter(
                 df,
@@ -245,8 +257,8 @@ class DataVisualizer:
         try:
             if not x_column:
                 # 选择第一个数值列
-                numeric_cols = df.select_dtypes(include=["number"]).columns
-                x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
+                numeric_cols = DataVisualizer._numeric_column_names(df)
+                x_column = numeric_cols[0] if len(numeric_cols) > 0 else DataVisualizer._column_name(df, 0)
 
             fig = px.histogram(
                 df, x=x_column, title=title or f"Distribution of {x_column}"
@@ -274,8 +286,8 @@ class DataVisualizer:
         """创建箱线图"""
         try:
             if not x_column:
-                numeric_cols = df.select_dtypes(include=["number"]).columns
-                x_column = numeric_cols[0] if len(numeric_cols) > 0 else df.columns[0]
+                numeric_cols = DataVisualizer._numeric_column_names(df)
+                x_column = numeric_cols[0] if len(numeric_cols) > 0 else DataVisualizer._column_name(df, 0)
 
             fig = px.box(
                 df,

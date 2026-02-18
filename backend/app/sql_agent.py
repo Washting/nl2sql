@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -86,9 +87,9 @@ class SQLAgentManager:
 
             # 读取文件数据
             if file_type == "csv":
-                df = pd.read_csv(pd.io.common.BytesIO(file_content))
+                df = pd.read_csv(BytesIO(file_content))
             elif file_type in ["excel", "xlsx", "xls"]:
-                df = pd.read_excel(pd.io.common.BytesIO(file_content))
+                df = pd.read_excel(BytesIO(file_content))
             else:
                 return {
                     "success": False,

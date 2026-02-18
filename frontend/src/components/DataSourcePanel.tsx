@@ -6,6 +6,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from './ui/hover-card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { Popconfirm } from './ui/popconfirm';
 import { api } from '../services/api';
+import { toast } from 'sonner';
 
 interface TableNode {
   name: string;
@@ -25,6 +26,7 @@ interface DataSource {
   table: string;
   rows: number;
   columns: string[];
+  column_comments?: Record<string, string>;
   description: string;
   source: string;
 }
@@ -33,13 +35,20 @@ interface DataSourcePanelProps {
   onTableSelect?: (tableName: string | null) => void;
   isCollapsed?: boolean;
   selectedTable?: string | null;
+  onUploadStateChange?: (uploading: boolean, filename?: string) => void;
 }
 
-export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTable: externalSelectedTable }: DataSourcePanelProps) {
+export function DataSourcePanel({
+  onTableSelect,
+  isCollapsed = false,
+  selectedTable: externalSelectedTable,
+  onUploadStateChange,
+}: DataSourcePanelProps) {
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [hoveringDeleteTable, setHoveringDeleteTable] = useState<string | null>(null);
   const [activePopconfirmTable, setActivePopconfirmTable] = useState<string | null>(null);
@@ -72,6 +81,39 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
     setExpandedNodes(newExpanded);
   };
 
+  const handleUploadClick = () => {
+    if (isUploading) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,.xlsx,.xls';
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const file = target.files?.[0];
+      if (!file) return;
+
+      try {
+        setIsUploading(true);
+        onUploadStateChange?.(true, file.name);
+        const result = await api.uploadFile(file);
+
+        if (!result.success) {
+          throw new Error(result.message || '上传失败');
+        }
+
+        await loadDataSources();
+        toast.success(`上传成功：${file.name}`);
+      } catch (error: any) {
+        const message = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '上传失败';
+        console.error('上传失败:', error);
+        toast.error(`上传失败：${message}`);
+      } finally {
+        setIsUploading(false);
+        onUploadStateChange?.(false);
+      }
+    };
+    input.click();
+  };
+
   const convertToTableNodes = (sources: DataSource[]): TableNode[] => {
     return sources.map((source): TableNode => ({
       name: source.name,
@@ -82,11 +124,16 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
         fields: Array.isArray(source.columns) ? source.columns.length : 0,
         rows: source.rows || 0,
         sample: Array.isArray(source.columns)
-          ? source.columns.slice(0, 3).join(', ') + (source.columns.length > 3 ? '...' : '')
+          ? source.columns
+            .slice(0, 3)
+            .map((column) => source.column_comments?.[column] || column)
+            .join(', ') + (source.columns.length > 3 ? '...' : '')
           : ''
       },
       children: Array.isArray(source.columns) ? source.columns.map(column => ({
-        name: column,
+        name: source.column_comments?.[column]
+          ? `${source.column_comments[column]} (${column})`
+          : column,
         type: 'column' as const
       })) : []
     }));
@@ -325,27 +372,11 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    onClick={() => {
-                      const input = document.createElement('input');
-                      input.type = 'file';
-                      input.accept = '.csv,.xlsx,.xls';
-                      input.onchange = async (e: any) => {
-                        const file = e.target.files[0];
-                        if (file) {
-                          try {
-                            await api.uploadFile(file);
-                            loadDataSources();
-                          } catch (error) {
-                            console.error('上传失败:', error);
-                            alert('上传失败: ' + error);
-                          }
-                        }
-                      };
-                      input.click();
-                    }}
+                    onClick={handleUploadClick}
+                    disabled={isUploading}
                     className="w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 bg-green-500/10 text-green-500 border border-green-500/30 hover:bg-green-500/20 hover:border-green-500/50"
                   >
-                    <Upload className="w-5 h-5" />
+                    <Upload className={`w-5 h-5 ${isUploading ? 'animate-pulse' : ''}`} />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="right" className="bg-popover border-border/50 text-foreground">
@@ -386,7 +417,7 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
         <div className="relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
-            placeholder="搜索表或段..."
+            placeholder="搜索表或字段..."
             value={searchQuery}
             type="search"
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -404,7 +435,7 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
           ) : (
             <div className="text-center py-8">
               <p className="text-muted-foreground text-xs">暂无数据源</p>
-              <p className="text-muted-foreground/60 text-xs mt-1">请上传文件或连接数据库</p>
+              <p className="text-muted-foreground/60 text-xs mt-1">请上传文件</p>
             </div>
           )}
         </div>
@@ -414,27 +445,11 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
           <Button
             variant="outline"
             className="w-full h-9 bg-background hover:bg-secondary border-border text-foreground hover:text-foreground text-xs font-normal"
-            onClick={() => {
-              const input = document.createElement('input');
-              input.type = 'file';
-              input.accept = '.csv,.xlsx,.xls';
-              input.onchange = async (e: any) => {
-                const file = e.target.files[0];
-                if (file) {
-                  try {
-                    await api.uploadFile(file);
-                    await loadDataSources();
-                  } catch (error) {
-                    console.error('上传失败:', error);
-                    alert('上传失败: ' + error);
-                  }
-                }
-              };
-              input.click();
-            }}
+            onClick={handleUploadClick}
+            disabled={isUploading}
           >
-            <Upload className="w-3.5 h-3.5 mr-2 text-current" />
-            上传文件
+            <Upload className={`w-3.5 h-3.5 mr-2 text-current ${isUploading ? 'animate-pulse' : ''}`} />
+            {isUploading ? '上传中...' : '上传文件'}
           </Button>
         </div>
       </div>

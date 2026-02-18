@@ -5,6 +5,7 @@ import { ResultsPanel } from "./components/ResultsPanel";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import { ModeToggle } from "./components/ModeToggle";
+import { Loader2 } from "lucide-react";
 
 export default function App() {
     const [selectedTable, setSelectedTable] = useState<string | null>(null);
@@ -12,6 +13,8 @@ export default function App() {
     const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
     const [streamingAnswer, setStreamingAnswer] = useState("");
     const [isStreaming, setIsStreaming] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadingFilename, setUploadingFilename] = useState<string>("");
 
     const handleTableSelect = (tableName: string | null) => {
         setSelectedTable(tableName);
@@ -54,6 +57,15 @@ export default function App() {
                         onTableSelect={handleTableSelect}
                         isCollapsed={isLeftPanelCollapsed}
                         selectedTable={selectedTable}
+                        onUploadStateChange={(uploading, filename) => {
+                            setIsUploading(uploading);
+                            if (uploading && filename) {
+                                setUploadingFilename(filename);
+                            }
+                            if (!uploading) {
+                                setUploadingFilename("");
+                            }
+                        }}
                     />
                 </div>
 
@@ -80,6 +92,17 @@ export default function App() {
                     />
                 </div>
             </div>
+
+            {isUploading && (
+                <div className="fixed inset-0 z-50 bg-background/65 backdrop-blur-[2px] flex items-center justify-center">
+                    <div className="rounded-xl border border-border bg-card px-6 py-4 shadow-xl flex items-center gap-3">
+                        <Loader2 className="w-5 h-5 animate-spin text-cyan-500" />
+                        <div className="text-sm text-foreground">
+                            正在导入文件{uploadingFilename ? `：${uploadingFilename}` : "..."}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <Toaster position="top-center" />
         </div>

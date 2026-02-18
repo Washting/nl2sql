@@ -1,8 +1,6 @@
 import io
-import json
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -14,16 +12,18 @@ def convert_numpy_to_native(value: Any) -> Any:
     """将 NumPy 类型转换为 Python 原生类型"""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
-    elif isinstance(value, (np.integer, np.int64, np.int32)):
-        return int(value)
-    elif isinstance(value, (np.floating, np.float64, np.float32)):
-        return float(value)
-    elif isinstance(value, (np.bool_, np.bool)):
-        return bool(value)
-    elif isinstance(value, np.datetime64):
+    if isinstance(value, np.generic):
+        dtype = value.dtype
+        if np.issubdtype(dtype, np.integer):
+            return int(value.item())
+        if np.issubdtype(dtype, np.floating):
+            return float(value.item())
+        if np.issubdtype(dtype, np.bool_):
+            return bool(value.item())
+    if isinstance(value, np.datetime64):
         return str(value)
-    elif isinstance(value, np.ndarray):
-        return value.tolist()
+    if hasattr(value, "tolist"):
+        return cast(Any, value).tolist()
     return value
 
 
@@ -64,16 +64,17 @@ class FileProcessor:
 
             column_info = []
             for col in headers:
-                dtype = str(sample_df[col].dtype)
-                sample_values = sample_df[col].dropna().head(3).tolist()
+                series = sample_df[str(col)]
+                dtype = str(series.dtype)
+                sample_values = series.dropna().head(3).tolist()
                 # 转换 sample_values 中的 NumPy 类型
                 sample_values = [convert_numpy_to_native(v) for v in sample_values]
                 column_info.append(
                     {
                         "name": col,
                         "type": dtype,
-                        "nullable": bool(sample_df[col].isnull().any()),
-                        "unique_values": int(sample_df[col].nunique()),
+                        "nullable": bool(series.isnull().any()),
+                        "unique_values": int(cast(int, series.nunique())),
                         "sample_values": sample_values,
                     }
                 )
@@ -159,10 +160,13 @@ class FileProcessor:
             result_df = df.head(limit)
 
             # 转换为字典列表，并处理 NumPy 类型
-            data = result_df.to_dict("records")
+            data: List[Dict[str, Any]] = [
+                {str(col): val for col, val in zip(result_df.columns, row)}
+                for row in result_df.itertuples(index=False, name=None)
+            ]
 
             # 递归转换所有 NumPy 类型
-            def clean_dict(d):
+            def clean_dict(d: Dict[str, Any]) -> Dict[str, Any]:
                 return {k: convert_numpy_to_native(v) for k, v in d.items()}
 
             data = [clean_dict(row) for row in data]
@@ -209,12 +213,13 @@ class FileProcessor:
             }
 
             # 为每列生成摘要
-            for col in df.columns:
+            for col in [str(c) for c in df.columns]:
+                series = df[col]
                 col_summary = {
                     "name": col,
-                    "dtype": str(df[col].dtype),
-                    "null_count": int(df[col].isnull().sum()),
-                    "unique_count": int(df[col].nunique()),
+                    "dtype": str(series.dtype),
+                    "null_count": int(cast(int, series.isnull().sum())),
+                    "unique_count": int(cast(int, series.nunique())),
                 }
                 # 将 null_count 和 unique_count 转换为 Python 原生类型
                 col_summary["null_count"] = convert_numpy_to_native(
@@ -225,27 +230,27 @@ class FileProcessor:
                 )
 
                 # 数值型列的额外统计
-                if df[col].dtype in ["int64", "float64"]:
+                if series.dtype in ["int64", "float64"]:
                     col_summary.update(
                         {
-                            "min": convert_numpy_to_native(df[col].min())
-                            if not df[col].empty
+                            "min": convert_numpy_to_native(series.min())
+                            if not series.empty
                             else None,
-                            "max": convert_numpy_to_native(df[col].max())
-                            if not df[col].empty
+                            "max": convert_numpy_to_native(series.max())
+                            if not series.empty
                             else None,
-                            "mean": convert_numpy_to_native(df[col].mean())
-                            if not df[col].empty
+                            "mean": convert_numpy_to_native(series.mean())
+                            if not series.empty
                             else None,
-                            "median": convert_numpy_to_native(df[col].median())
-                            if not df[col].empty
+                            "median": convert_numpy_to_native(series.median())
+                            if not series.empty
                             else None,
                         }
                     )
 
                 # 字符串型列的额外统计
-                elif df[col].dtype == "object":
-                    value_counts = df[col].value_counts().head(5)
+                elif series.dtype == "object":
+                    value_counts = series.value_counts().head(5)
                     # 转换 value_counts 中的 NumPy 类型
                     most_common = {
                         str(k): convert_numpy_to_native(v)

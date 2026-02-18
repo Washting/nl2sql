@@ -39,14 +39,19 @@ apiClient.interceptors.response.use(
 export interface FileUploadResponse {
     success: boolean;
     table_name?: string;
+    table_comment_cn?: string;
     message: string;
     headers?: string[];
+    column_comments?: Record<string, string>;
     column_info?: Array<{
         name: string;
         type: string;
         nullable: boolean;
-        unique_values: number;
+        unique?: number;
+        unique_values?: number;
         sample_values: any[];
+        comment_cn?: string;
+        original_name?: string;
     }>;
     total_columns?: number;
     estimated_rows?: number;
