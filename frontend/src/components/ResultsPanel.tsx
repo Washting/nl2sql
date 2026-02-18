@@ -4,32 +4,29 @@ import remarkGfm from "remark-gfm";
 import { AlertCircle, BarChart3, Download, FileText, Hash, Loader2, Table as TableIcon } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Button } from "./ui/button";
+import { useMetadataStore } from "../stores/metadata-store";
 
 interface ResultsPanelProps {
   queryResult?: any;
+  selectedTable?: string | null;
   streamingAnswer?: string;
   isStreaming?: boolean;
 }
 
-const FIELD_NAME_MAP: Record<string, string> = {
-  product_name: "产品名称",
-  price: "价格",
-  sales_volume: "销售数量",
-  sale_date: "销售日期",
-  category: "类别",
-  brand: "品牌",
-  total_amount: "销售总额",
-  quantity: "数量",
-  name: "名称",
-};
-
 export function ResultsPanel({
   queryResult,
+  selectedTable = null,
   streamingAnswer = "",
   isStreaming = false,
 }: ResultsPanelProps) {
+  const { getTableDisplayName, getColumnDisplayName } = useMetadataStore();
   const [chartType, setChartType] = useState<"bar" | "line">("bar");
   const tableData = queryResult?.data || [];
+  const activeTableName = queryResult?.table_name || selectedTable || null;
+  const tableDisplayName = getTableDisplayName(activeTableName);
+  const displayColumns: string[] = queryResult?.columns || (tableData[0] ? Object.keys(tableData[0]) : []);
+  const getDisplayColumnName = (columnName: string) =>
+    getColumnDisplayName(activeTableName, columnName);
 
   const chartMeta = useMemo(() => {
     if (!tableData.length) return null;
@@ -48,14 +45,22 @@ export function ResultsPanel({
 
   const handleExport = () => {
     if (!tableData.length) return;
-    const headers = queryResult.columns?.join(",") || "";
-    const rows = tableData.map((row: any) => Object.values(row).join(",")).join("\n");
+    const escapeCsvValue = (value: unknown) => {
+      const text = value === null || value === undefined ? "" : String(value);
+      const escaped = text.replace(/"/g, '""');
+      return `"${escaped}"`;
+    };
+    const headers = displayColumns.map((col) => escapeCsvValue(getDisplayColumnName(col))).join(",");
+    const rows = tableData
+      .map((row: any) => displayColumns.map((col) => escapeCsvValue(row[col])).join(","))
+      .join("\n");
     const csv = `${headers}\n${rows}`;
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
-    link.setAttribute("download", `query_result_${Date.now()}.csv`);
+    const safeTableName = String(tableDisplayName || "query_result").replace(/[\\/:*?"<>|]/g, "_");
+    link.setAttribute("download", `${safeTableName}_${Date.now()}.csv`);
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
@@ -73,6 +78,7 @@ export function ResultsPanel({
             </div>
             {queryResult?.success && (
               <div className="flex items-center gap-3 text-xs text-muted-foreground ml-7">
+                {tableDisplayName && <span>表名: {tableDisplayName}</span>}
                 <span>共 {queryResult.returned_rows || tableData.length || 0} 行</span>
                 <span>执行时间: {queryResult.executionTime || "125"}ms</span>
               </div>
@@ -109,7 +115,7 @@ export function ResultsPanel({
               <p className="text-muted-foreground/80 text-xs mt-1">请在中间输入问题并执行查询</p>
             </div>
           </div>
-        ) : isStreaming && !hasAnyContent ? (
+        ) : isStreaming ? (
           <div className="h-full flex items-center justify-center">
             <div className="w-full max-w-sm rounded-xl border border-border/50 bg-muted/20 p-5 space-y-3">
               <div className="flex items-center gap-2 text-cyan-600 dark:text-cyan-300 text-sm">
@@ -139,9 +145,9 @@ export function ResultsPanel({
                   <table className="w-full table-auto border-collapse">
                     <thead>
                       <tr className="border-b border-border/40 bg-muted/30">
-                        {(queryResult.columns || Object.keys(tableData[0])).map((col: string) => (
+                        {displayColumns.map((col: string) => (
                           <th key={col} className="text-cyan-500 dark:text-cyan-300 font-medium text-xs text-left px-4 py-3 whitespace-nowrap border-r border-border/20 last:border-r-0">
-                            {col}
+                            {getDisplayColumnName(col)}
                           </th>
                         ))}
                       </tr>
@@ -149,7 +155,7 @@ export function ResultsPanel({
                     <tbody>
                       {tableData.map((row: any, rowIdx: number) => (
                         <tr key={rowIdx} className="border-b border-border/20 hover:bg-muted/20 last:border-b-0">
-                          {(queryResult.columns || Object.keys(row)).map((col: string) => (
+                          {displayColumns.map((col: string) => (
                             <td key={`${rowIdx}-${col}`} className="text-foreground/85 text-xs px-4 py-3 whitespace-nowrap border-r border-border/20 last:border-r-0">
                               {row[col] !== null && row[col] !== undefined ? String(row[col]) : "-"}
                             </td>
@@ -168,6 +174,9 @@ export function ResultsPanel({
                   <div className="flex items-center gap-2">
                     <BarChart3 className="w-4 h-4 text-cyan-500 dark:text-cyan-400" />
                     <h3 className="text-sm font-medium text-cyan-600 dark:text-cyan-300">自动生成图表</h3>
+                    {tableDisplayName && (
+                      <span className="text-xs text-muted-foreground">表: {tableDisplayName}</span>
+                    )}
                     {tableData.length > 20 && <span className="text-xs text-muted-foreground">（显示前20条）</span>}
                   </div>
                   <div className="flex gap-2">
@@ -182,11 +191,11 @@ export function ResultsPanel({
                 <div className="flex gap-2 mb-3">
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-muted/40 border border-border/40">
                     <Hash className="w-3 h-3 text-cyan-500 dark:text-cyan-400" />
-                    <span className="text-xs font-medium text-muted-foreground">维度: {FIELD_NAME_MAP[chartMeta.xKey] || chartMeta.xKey}</span>
+                    <span className="text-xs font-medium text-muted-foreground">维度: {getDisplayColumnName(chartMeta.xKey)}</span>
                   </div>
                   <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-muted/40 border border-border/40">
                     <Hash className="w-3 h-3 text-cyan-500 dark:text-cyan-400" />
-                    <span className="text-xs font-medium text-muted-foreground">指标: {FIELD_NAME_MAP[chartMeta.yKey] || chartMeta.yKey}</span>
+                    <span className="text-xs font-medium text-muted-foreground">指标: {getDisplayColumnName(chartMeta.yKey)}</span>
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={250}>

@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/t
 import { Popconfirm } from './ui/popconfirm';
 import { api } from '../services/api';
 import { toast } from 'sonner';
+import { useMetadataStore } from '../stores/metadata-store';
 
 interface TableNode {
   name: string;
@@ -49,6 +50,7 @@ export function DataSourcePanel({
   selectedTable: externalSelectedTable,
   onUploadStateChange,
 }: DataSourcePanelProps) {
+  const { upsertFromSources } = useMetadataStore();
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
@@ -80,6 +82,7 @@ export function DataSourcePanel({
       const response = await api.getDataSources();
       console.log('加载的数据源:', response);
       setDataSources(response.sources || []);
+      upsertFromSources(response.sources || []);
     } catch (error) {
       console.error('加载数据源失败:', error);
       setDataSources([]);

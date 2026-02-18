@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DataSourcePanel } from "./components/DataSourcePanel";
 import { QueryPanel } from "./components/QueryPanel";
 import { ResultsPanel } from "./components/ResultsPanel";
@@ -6,8 +6,10 @@ import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
 import { ModeToggle } from "./components/ModeToggle";
 import { Loader2 } from "lucide-react";
+import { useMetadataStore } from "./stores/metadata-store";
 
 export default function App() {
+    const { getSampleQuestions } = useMetadataStore();
     const [selectedTable, setSelectedTable] = useState<string | null>(null);
     const [queryResult, setQueryResult] = useState<any>(null);
     const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState(false);
@@ -16,6 +18,10 @@ export default function App() {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadingFilename, setUploadingFilename] = useState<string>("");
     const [sampleQuestions, setSampleQuestions] = useState<string[]>([]);
+
+    useEffect(() => {
+        setSampleQuestions(getSampleQuestions(selectedTable));
+    }, [selectedTable, getSampleQuestions]);
 
     const handleTableSelect = (tableName: string | null) => {
         setSelectedTable(tableName);
@@ -59,7 +65,6 @@ export default function App() {
                 >
                     <DataSourcePanel
                         onTableSelect={handleTableSelect}
-                        onSampleQuestionsChange={setSampleQuestions}
                         isCollapsed={isLeftPanelCollapsed}
                         selectedTable={selectedTable}
                         onUploadStateChange={(uploading, filename) => {
@@ -93,6 +98,7 @@ export default function App() {
                 <div className="w-[460px] xl:w-[500px] flex-shrink-0 border border-border/60 rounded-2xl bg-card overflow-hidden">
                     <ResultsPanel
                         queryResult={queryResult}
+                        selectedTable={selectedTable}
                         streamingAnswer={streamingAnswer}
                         isStreaming={isStreaming}
                     />

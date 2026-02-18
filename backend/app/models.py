@@ -25,9 +25,14 @@ class FileUploadResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Natural language query")
-    table_name: Optional[str] = Field(None, description="Table name if querying database table")
+    table_name: Optional[str] = Field(
+        None, description="Table name if querying database table"
+    )
     columns: Optional[List[str]] = Field(None, description="Specific columns to query")
-    limit: Optional[int] = Field(None, description="Maximum number of rows to return (deprecated, use natural language in query)")
+    limit: Optional[int] = Field(
+        None,
+        description="Maximum number of rows to return (deprecated, use natural language in query)",
+    )
 
 
 class QueryResponse(BaseModel):

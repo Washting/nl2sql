@@ -6,11 +6,12 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
+from langchain_community.utilities import SQLDatabase
 from utils.file_processor import FileProcessor
 
 from app.config import settings
@@ -59,16 +60,7 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
     if request.table_name:
         agent_key = f"table_{request.table_name}"
 
-        db_path = None
-        if DATA_MANAGER_AVAILABLE and data_manager:
-            dm_path = (
-                os.path.abspath(data_manager.db_path) if data_manager.db_path else None
-            )
-            if dm_path and os.path.exists(dm_path):
-                db_path = dm_path
-                logger.info(f"Using data_manager database at: {db_path}")
-
-        if not db_path:
+        if not data_manager:
             raise HTTPException(
                 status_code=404,
                 detail="Database not found. Please initialize the database first.",
@@ -84,13 +76,9 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
             )
 
             # 连接到现有数据库
-            from langchain_community.utilities import SQLDatabase
-            from sqlalchemy import create_engine
-
-            db_uri = f"sqlite:///{db_path}"
-            agent.db = SQLDatabase.from_uri(db_uri)
+            agent.db = SQLDatabase.from_uri(data_manager.db_url)
             # 创建 SQLAlchemy 连接用于 execute_sql
-            agent.db_connection = create_engine(db_uri)
+            agent.db_connection = data_manager.engine
 
             # 创建SQL Agent
             agent_result = agent.create_sql_agent()
