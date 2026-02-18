@@ -21,9 +21,7 @@ export default function App() {
     const handleQueryResult = (result: any) => {
         setQueryResult(result);
         if (result.success) {
-            toast.success("查询执行成功", {
-                description: `返回 ${result.returned_rows || result.data?.length || 0} 条结果`,
-            });
+            toast.success("查询执行成功");
         }
     };
 

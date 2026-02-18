@@ -36,7 +36,7 @@ interface DataSourcePanelProps {
 }
 
 export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTable: externalSelectedTable }: DataSourcePanelProps) {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['上传的文件']));
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,7 +73,7 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
   };
 
   const convertToTableNodes = (sources: DataSource[]): TableNode[] => {
-    const toTableNode = (source: DataSource): TableNode => ({
+    return sources.map((source): TableNode => ({
       name: source.name,
       type: 'table' as const,
       tableName: source.table, // 实际的数据库表名
@@ -89,25 +89,7 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
         name: column,
         type: 'column' as const
       })) : []
-    });
-
-    const databaseTables = sources
-      .filter(source => source.source !== 'upload')
-      .map(toTableNode);
-    const uploadedTables = sources
-      .filter(source => source.source === 'upload')
-      .map(toTableNode);
-
-    return [
-      ...databaseTables,
-      ...(uploadedTables.length > 0
-        ? [{
-          name: '上传的文件',
-          type: 'schema' as const,
-          children: uploadedTables
-        }]
-        : [])
-    ];
+    }));
   };
 
   const handleDeleteTable = async (tableName: string) => {
@@ -191,14 +173,11 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
           {!hasChildren && <div className="w-3 flex-shrink-0" />}
           {icon}
           <span className="text-foreground/90 dark:text-foreground/80 text-xs truncate">{node.name}</span>
-          {node.type === 'table' && node.source !== 'upload' && node.tableName && (
+          {node.type === 'table' && node.tableName && (
             <Popconfirm
               title={`确认删除数据表「${node.name}」？`}
               description="此操作不可撤销。"
-              confirmText="继续删除"
-              secondConfirmTitle="二次确认"
-              secondConfirmDescription={`删除后将永久丢失「${node.name}」数据。`}
-              secondConfirmText="确认删除"
+              confirmText="确认删除"
               onConfirm={() => handleDeleteTable(node.tableName!)}
               onOpenChange={(open) => {
                 if (open) {
@@ -218,6 +197,7 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
                 className="ml-auto h-6 w-6 p-0 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-visible:pointer-events-auto transition-opacity"
                 onClick={(e) => {
                   e.stopPropagation();
+                  setActivePopconfirmTable(node.tableName || null);
                 }}
                 onMouseEnter={() => {
                   setHoveringDeleteTable(node.tableName || null);
@@ -239,23 +219,13 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
     );
 
     if (node.type === 'table' && node.metadata) {
-      const shouldDisableHoverCard =
-        !!node.tableName &&
+      const shouldDisableHoverCard = !!node.tableName &&
         (hoveringDeleteTable === node.tableName ||
           activePopconfirmTable === node.tableName);
 
-      if (shouldDisableHoverCard) {
-        return (
-          <Fragment key={node.name}>
-            {content}
-            {isExpanded && node.children?.map(child => renderTreeNode(child, level + 1))}
-          </Fragment>
-        );
-      }
-
       return (
         <Fragment key={node.name}>
-          <HoverCard openDelay={300}>
+          <HoverCard open={shouldDisableHoverCard ? false : undefined} openDelay={300}>
             <HoverCardTrigger asChild>
               {content}
             </HoverCardTrigger>
@@ -440,59 +410,32 @@ export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTa
         </div>
 
         {/* Upload Section */}
-        <div className="mt-4 pt-4 border-t border-border/20">
-          <div className="px-2">
-            <p className="text-xs text-muted-foreground mb-2 font-medium">已上传文件</p>
-            <div className="space-y-1 mb-2">
-              {dataSources.filter(ds => ds.source === 'upload').map((file, idx) => {
-                // 使用 table 字段（file_{file_id}）作为选中标识
-                const tableName = file.table || `file_${(file as any).file_id}` || file.name;
-                const isSelected = selectedTable === tableName;
-
-                return (
-                  <div
-                    key={idx}
-                    onClick={() => {
-                      if (onTableSelect) {
-                        onTableSelect(tableName);
-                        setSelectedTable(tableName);
-                      }
-                    }}
-                    className={`flex items-center gap-2 px-3 py-2 bg-secondary/50 dark:bg-secondary rounded-lg border border-border/20 cursor-pointer hover:border-cyan-500/20 hover:bg-cyan-500/5 transition-colors ${isSelected ? 'border-cyan-500/40 bg-cyan-500/10' : ''
-                      }`}
-                  >
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-green-500 dark:text-green-400 flex-shrink-0" />
-                    <span className="text-xs text-foreground/90 dark:text-foreground/80 flex-1 truncate">{file.name}</span>
-                  </div>
-                );
-              })}
-            </div>
-            <Button
-              variant="outline"
-              className="w-full h-9 bg-background hover:bg-secondary border-border text-foreground hover:text-foreground text-xs font-normal"
-              onClick={() => {
-                const input = document.createElement('input');
-                input.type = 'file';
-                input.accept = '.csv,.xlsx,.xls';
-                input.onchange = async (e: any) => {
-                  const file = e.target.files[0];
-                  if (file) {
-                    try {
-                      await api.uploadFile(file);
-                      loadDataSources();
-                    } catch (error) {
-                      console.error('上传失败:', error);
-                      alert('上传失败: ' + error);
-                    }
+        <div className="mt-4 pt-4 border-t border-border/20 px-2">
+          <Button
+            variant="outline"
+            className="w-full h-9 bg-background hover:bg-secondary border-border text-foreground hover:text-foreground text-xs font-normal"
+            onClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '.csv,.xlsx,.xls';
+              input.onchange = async (e: any) => {
+                const file = e.target.files[0];
+                if (file) {
+                  try {
+                    await api.uploadFile(file);
+                    await loadDataSources();
+                  } catch (error) {
+                    console.error('上传失败:', error);
+                    alert('上传失败: ' + error);
                   }
-                };
-                input.click();
-              }}
-            >
-              <Upload className="w-3.5 h-3.5 mr-2 text-current" />
-              上传文件 (CSV/Excel)
-            </Button>
-          </div>
+                }
+              };
+              input.click();
+            }}
+          >
+            <Upload className="w-3.5 h-3.5 mr-2 text-current" />
+            上传文件
+          </Button>
         </div>
       </div>
     </div>

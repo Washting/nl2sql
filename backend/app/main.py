@@ -49,53 +49,16 @@ except Exception as e:
     logger.warning(f"Data manager not available: {e}")
 
 # 全局存储
-file_store: Dict[str, Dict] = {}
 chat_sessions: Dict[str, Dict] = {}
 sql_agents: Dict[str, SQLAgentManager] = {}
 
 
 def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManager]:
-    """Resolve target agent by file_id/table_name, creating one when needed."""
+    """Resolve target agent by table_name, creating one when needed."""
     agent_key = None
 
-    # 优先使用 file_id（CSV上传文件）
-    if request.file_id and request.file_id in file_store:
-        agent_key = f"file_{request.file_id}"
-        file_info = file_store[request.file_id]
-
-        logger.info(f"[CSV查询] 处理上传文件: {file_info.get('filename', 'unknown')}")
-        logger.info(f"[CSV查询] 用户问题: {request.query}")
-
-        # 获取或创建SQL Agent
-        if agent_key not in sql_agents:
-            logger.info(f"[CSV查询] 创建新的SQL Agent for {agent_key}")
-            agent = SQLAgentManager(
-                openai_api_key=settings.openai_api_key,
-                openai_base_url=settings.openai_base_url,
-                model=settings.default_model,
-            )
-
-            # 创建数据库（使用更有意义的表名）
-            table_name = f"file_{request.file_id}"
-            db_result = agent.create_database_from_file(
-                file_info["content"], file_info["file_type"], table_name=table_name
-            )
-
-            if not db_result["success"]:
-                raise HTTPException(status_code=500, detail=db_result["error"])
-
-            # 创建SQL Agent
-            agent_result = agent.create_sql_agent()
-
-            if not agent_result["success"]:
-                raise HTTPException(status_code=500, detail=agent_result["error"])
-
-            sql_agents[agent_key] = agent
-        else:
-            logger.info(f"[CSV查询] 重用已有的SQL Agent for {agent_key}")
-
-    # 使用 table_name（从数据库）
-    elif request.table_name:
+    # 使用 table_name（统一从主数据库查询，包含上传后的表）
+    if request.table_name:
         agent_key = f"table_{request.table_name}"
 
         db_path = None
@@ -138,7 +101,7 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
 
     else:
         raise HTTPException(
-            status_code=400, detail="Either file_id or table_name must be provided"
+            status_code=400, detail="table_name must be provided"
         )
 
     return agent_key, sql_agents[agent_key]
@@ -149,9 +112,6 @@ def _run_query(request: QueryRequest) -> Dict[str, Any]:
     agent_key, agent = _resolve_or_create_agent(request)
 
     # 执行查询
-    is_csv_query = agent_key.startswith("file_")
-    if is_csv_query:
-        logger.info("[CSV查询] 开始执行查询...")
     logger.info(f"Executing query: {request.query} on {agent_key}")
 
     result = agent.query_data(request.query)
@@ -165,11 +125,6 @@ def _run_query(request: QueryRequest) -> Dict[str, Any]:
     sql = result.get("sql")
     answer = result.get("answer", "")
     reasoning = result.get("reasoning", [])
-
-    if is_csv_query:
-        logger.info(
-            f"[CSV查询] 查询完成: SQL={sql[:50] if sql else None}..., 数据行数={len(data)}, 答案长度={len(answer) if answer else 0}"
-        )
 
     logger.info(
         f"Query result: data rows={len(data)}, columns={len(columns)}, has_sql={bool(sql)}, has_answer={bool(answer)}"
@@ -301,7 +256,7 @@ async def root():
 
 @app.get("/datasources")
 async def get_data_sources():
-    """获取所有数据源（数据库表 + 上传的文件）"""
+    """获取主数据库中的所有数据表（包含上传后合并的表）"""
     sources = []
 
     # 获取数据库表
@@ -311,20 +266,6 @@ async def get_data_sources():
             sources.extend(db_tables)
         except Exception as e:
             logger.error(f"Error getting database tables: {e}")
-
-    # 添加上传的文件
-    for file_id, file_info in file_store.items():
-        sources.append(
-            {
-                "name": file_info["filename"],
-                "table": f"file_{file_id}",
-                "rows": file_info.get("estimated_rows", 0),
-                "columns": file_info.get("headers", []),
-                "description": "用户上传的文件",
-                "source": "upload",
-                "file_id": file_id,
-            }
-        )
 
     return {"success": True, "sources": sources}
 
@@ -371,32 +312,37 @@ async def upload_file(file: UploadFile = File(...)):
         content = await file.read()
         file_type_str = "csv" if file_type == "csv" else "excel"
 
-        # 处理文件
-        result = FileProcessor.get_file_headers(content, file_type_str)
+        if not DATA_MANAGER_AVAILABLE or not data_manager:
+            raise HTTPException(status_code=500, detail="Data manager is not available")
 
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
+        # 先获取列信息（用于前端展示）
+        header_result = FileProcessor.get_file_headers(content, file_type_str)
+        if not header_result["success"]:
+            raise HTTPException(status_code=500, detail=header_result["error"])
 
-        # 生成文件ID并存储
-        file_id = str(uuid.uuid4())
-        file_store[file_id] = {
-            "filename": file.filename,
-            "content": content,
-            "file_type": file_type_str,
-            "headers": result["headers"],
-            "column_info": result["column_info"],
-        }
+        # 直接导入主数据库
+        import_result = data_manager.import_uploaded_file(
+            content, file_type_str, file.filename
+        )
+        if not import_result.get("success"):
+            raise HTTPException(
+                status_code=500, detail=import_result.get("error", "Import failed")
+            )
 
-        logger.info(f"File uploaded successfully: {file.filename} (ID: {file_id})")
+        logger.info(
+            f"File uploaded and merged into main DB: {file.filename} -> {import_result.get('table_name')}"
+        )
 
         return FileUploadResponse(
             success=True,
-            file_id=file_id,
+            table_name=import_result.get("table_name"),
             message=f"File '{file.filename}' uploaded successfully",
-            headers=result["headers"],
-            column_info=result["column_info"],
-            total_columns=result["total_columns"],
-            estimated_rows=result["estimated_rows"],
+            headers=header_result["headers"],
+            column_info=header_result["column_info"],
+            total_columns=header_result["total_columns"],
+            estimated_rows=import_result.get(
+                "estimated_rows", header_result["estimated_rows"]
+            ),
         )
 
     except HTTPException:
@@ -477,22 +423,18 @@ async def create_visualization(request: VisualizationRequest):
     创建数据可视化图表
     """
     try:
-        # 检查文件ID
-        if not request.file_id or request.file_id not in file_store:
-            raise HTTPException(status_code=404, detail="File not found")
+        if not DATA_MANAGER_AVAILABLE or not data_manager:
+            raise HTTPException(status_code=500, detail="Data manager is not available")
 
-        file_info = file_store[request.file_id]
+        table_info = data_manager.get_table_info(request.table_name)
+        if not table_info:
+            raise HTTPException(status_code=404, detail="Table not found")
 
-        # 获取数据
-        data_result = FileProcessor.query_data(
-            file_info["content"],
-            file_info["file_type"],
-            "查询所有数据",
-            limit=request.limit,
-        )
-
-        if not data_result["success"]:
-            raise HTTPException(status_code=500, detail=data_result["error"])
+        query = f'SELECT * FROM "{request.table_name}" LIMIT {request.limit}'
+        df = data_manager.execute_query(query)
+        if df is None:
+            raise HTTPException(status_code=500, detail="Failed to query table data")
+        data_result = {"success": True, "data": df.to_dict("records")}
 
         # 创建可视化
         viz_result = DataVisualizer.create_chart(
@@ -527,7 +469,7 @@ async def chat_with_data(request: ChatRequest):
 
         # 初始化会话
         if session_id not in chat_sessions:
-            chat_sessions[session_id] = {"messages": [], "file_id": request.file_id}
+            chat_sessions[session_id] = {"messages": [], "table_name": request.table_name}
 
         session = chat_sessions[session_id]
 
@@ -535,38 +477,12 @@ async def chat_with_data(request: ChatRequest):
         user_message = ChatMessage(role="user", content=request.message)
         session["messages"].append(user_message)
 
-        # 获取文件信息
-        file_id = request.file_id or session.get("file_id")
-        if not file_id or file_id not in file_store:
-            raise HTTPException(status_code=404, detail="No file associated with chat")
+        table_name = request.table_name or session.get("table_name")
+        if not table_name:
+            raise HTTPException(status_code=400, detail="table_name is required")
 
-        file_info = file_store[file_id]
-
-        # 获取或创建SQL Agent
-        if file_id not in sql_agents:
-            agent = SQLAgentManager(
-                openai_api_key=settings.openai_api_key,
-                openai_base_url=settings.openai_base_url,
-                model=settings.default_model,
-            )
-
-            # 创建数据库
-            db_result = agent.create_database_from_file(
-                file_info["content"], file_info["file_type"]
-            )
-
-            if not db_result["success"]:
-                raise HTTPException(status_code=500, detail=db_result["error"])
-
-            # 创建SQL Agent
-            agent_result = agent.create_sql_agent()
-
-            if not agent_result["success"]:
-                raise HTTPException(status_code=500, detail=agent_result["error"])
-
-            sql_agents[file_id] = agent
-
-        agent = sql_agents[file_id]
+        query_request = QueryRequest(query=request.message, table_name=table_name)
+        _, agent = _resolve_or_create_agent(query_request)
 
         # 执行查询
         result = agent.query_data(request.message)
@@ -592,46 +508,12 @@ async def chat_with_data(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/files")
-async def list_files():
-    """列出所有上传的文件"""
-    files = []
-    for file_id, info in file_store.items():
-        files.append(
-            {
-                "file_id": file_id,
-                "filename": info["filename"],
-                "file_type": info["file_type"],
-                "total_columns": len(info["headers"]),
-                "estimated_rows": info.get("estimated_rows"),
-            }
-        )
-    return {"files": files}
-
-
-@app.delete("/files/{file_id}")
-async def delete_file(file_id: str):
-    """删除文件"""
-    if file_id not in file_store:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    # 清理SQL Agent
-    if file_id in sql_agents:
-        sql_agents[file_id].cleanup()
-        del sql_agents[file_id]
-
-    # 删除文件
-    del file_store[file_id]
-
-    return {"success": True, "message": "File deleted successfully"}
-
-
 @app.get("/health")
 async def health_check():
     """健康检查"""
     return {
         "status": "healthy",
-        "files_loaded": len(file_store),
+        "files_loaded": 0,
         "active_agents": len(sql_agents),
         "active_sessions": len(chat_sessions),
     }

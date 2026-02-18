@@ -38,7 +38,7 @@ apiClient.interceptors.response.use(
 // 类型定义
 export interface FileUploadResponse {
     success: boolean;
-    file_id?: string;
+    table_name?: string;
     message: string;
     headers?: string[];
     column_info?: Array<{
@@ -54,7 +54,6 @@ export interface FileUploadResponse {
 
 export interface QueryRequest {
     query: string;
-    file_id?: string;
     table_name?: string;
     columns?: string[];
     limit?: number;
@@ -81,7 +80,7 @@ export interface QueryStreamHandlers {
 }
 
 export interface VisualizationRequest {
-    file_id?: string;
+    table_name: string;
     chart_type:
         | "bar"
         | "line"
@@ -107,7 +106,6 @@ export interface VisualizationResponse {
 export interface ChatRequest {
     message: string;
     session_id?: string;
-    file_id?: string;
     table_name?: string;
 }
 
@@ -118,14 +116,6 @@ export interface ChatResponse {
     data?: any[];
     visualization?: string;
     error?: string;
-}
-
-export interface FileInfo {
-    file_id: string;
-    filename: string;
-    file_type: string;
-    total_columns: number;
-    estimated_rows: number;
 }
 
 export interface DeleteTableResponse {
@@ -260,20 +250,6 @@ export const api = {
         return response as unknown as ChatResponse;
     },
 
-    // 获取文件列表
-    async getFiles(): Promise<{ files: FileInfo[] }> {
-        const response = await apiClient.get("/files");
-        return response as unknown as { files: FileInfo[] };
-    },
-
-    // 删除文件
-    async deleteFile(
-        fileId: string,
-    ): Promise<{ success: boolean; message: string }> {
-        const response = await apiClient.delete(`/files/${fileId}`);
-        return response as unknown as { success: boolean; message: string };
-    },
-
     async deleteTable(tableName: string): Promise<DeleteTableResponse> {
         const response = await apiClient.delete(`/tables/${tableName}`);
         return response as unknown as DeleteTableResponse;
@@ -303,7 +279,7 @@ export const uploadFileHelper = async (file: File) => {
         if (result.success) {
             return {
                 success: true,
-                fileId: result.file_id!,
+                tableName: result.table_name!,
                 filename: file.name,
                 headers: result.headers!,
                 columnInfo: result.column_info!,
@@ -324,15 +300,15 @@ export const uploadFileHelper = async (file: File) => {
 };
 
 // 导出查询辅助函数
-export const queryDataHelper = async (query: string, fileId?: string) => {
+export const queryDataHelper = async (query: string, tableName?: string) => {
     try {
-        if (!fileId) {
-            throw new Error("请先上传文件");
+        if (!tableName) {
+            throw new Error("请先选择数据表");
         }
 
         const result = await api.queryData({
             query,
-            file_id: fileId,
+            table_name: tableName,
             limit: 100,
         });
 
@@ -361,18 +337,18 @@ export const queryDataHelper = async (query: string, fileId?: string) => {
 // 导出可视化辅助函数
 export const createVisualizationHelper = async (
     chartType: string,
-    fileId?: string,
+    tableName?: string,
     xColumn?: string,
     yColumn?: string,
     title?: string,
 ) => {
     try {
-        if (!fileId) {
-            throw new Error("请先上传文件");
+        if (!tableName) {
+            throw new Error("请先选择数据表");
         }
 
         const result = await api.createVisualization({
-            file_id: fileId,
+            table_name: tableName,
             chart_type: chartType as any,
             x_column: xColumn,
             y_column: yColumn,
@@ -403,19 +379,16 @@ export const createVisualizationHelper = async (
 // 导出聊天辅助函数
 export const chatHelper = async (
     message: string,
-    fileId?: string,
     sessionId?: string,
     tableName?: string,
 ) => {
     try {
-        // 如果没有fileId但有tableName，使用tableName查询
-        if (!fileId && !tableName) {
-            throw new Error("请先上传文件或选择数据源");
+        if (!tableName) {
+            throw new Error("请先选择数据源");
         }
 
         const result = await api.chat({
             message,
-            file_id: fileId,
             table_name: tableName,
             session_id: sessionId,
         });

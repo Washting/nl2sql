@@ -48,7 +48,6 @@ export function QueryPanel({
   const [generatedSQL, setGeneratedSQL] = useState("");
   const [reasoning, setReasoning] = useState<string[]>([]);
   const [isQuerying, setIsQuerying] = useState(false);
-  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [streamProgress, setStreamProgress] = useState<string[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -71,20 +70,12 @@ export function QueryPanel({
 
   useEffect(() => {
     if (!selectedTable) return;
-
-    if (selectedTable.startsWith("file_")) {
-      setSelectedFileId(selectedTable.replace("file_", ""));
-      setQuery("显示前10条数据");
-      return;
-    }
-
-    setSelectedFileId(null);
     setQuery(`显示${selectedTable}表的前10条数据`);
   }, [selectedTable]);
 
   const handleRun = async () => {
     if (!selectedTable) {
-      alert("请先在左侧选择一个数据表或上传文件");
+      alert("请先在左侧选择一个数据表");
       return;
     }
     if (!query.trim()) {
@@ -98,12 +89,7 @@ export function QueryPanel({
     requestAnimationFrame(() => scrollToBottom("auto"));
 
     try {
-      const request: any = { query };
-      if (selectedFileId) {
-        request.file_id = selectedFileId;
-      } else {
-        request.table_name = selectedTable;
-      }
+      const request: any = { query, table_name: selectedTable };
 
       const result = await api.queryDataStream(request, {
         onStatus: (message) => {
@@ -136,12 +122,7 @@ export function QueryPanel({
     } catch (error) {
       console.error("流式查询失败，降级为普通查询:", error);
       try {
-        const request: any = { query };
-        if (selectedFileId) {
-          request.file_id = selectedFileId;
-        } else {
-          request.table_name = selectedTable;
-        }
+        const request: any = { query, table_name: selectedTable };
 
         const result: any = await api.queryData(request);
         if (result.sql) {

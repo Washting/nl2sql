@@ -12,7 +12,7 @@ class FileType(str, Enum):
 
 class FileUploadResponse(BaseModel):
     success: bool
-    file_id: Optional[str] = None
+    table_name: Optional[str] = None
     message: str
     headers: Optional[List[str]] = None
     column_info: Optional[List[Dict[str, Any]]] = None
@@ -22,7 +22,6 @@ class FileUploadResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Natural language query")
-    file_id: Optional[str] = Field(None, description="File ID if querying uploaded file")
     table_name: Optional[str] = Field(None, description="Table name if querying database table")
     columns: Optional[List[str]] = Field(None, description="Specific columns to query")
     limit: Optional[int] = Field(None, description="Maximum number of rows to return (deprecated, use natural language in query)")
@@ -52,7 +51,7 @@ class ChartType(str, Enum):
 
 
 class VisualizationRequest(BaseModel):
-    file_id: Optional[str] = None
+    table_name: str = Field(..., description="Table name for visualization")
     chart_type: ChartType
     x_column: Optional[str] = None
     y_column: Optional[str] = None
@@ -77,14 +76,14 @@ class ChatMessage(BaseModel):
 class ChatSession(BaseModel):
     session_id: str
     messages: List[ChatMessage]
-    file_id: Optional[str] = None
+    table_name: Optional[str] = None
     created_at: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
     session_id: Optional[str] = Field(None, description="Existing session ID")
-    file_id: Optional[str] = Field(None, description="File ID to analyze")
+    table_name: Optional[str] = Field(None, description="Table name to analyze")
 
 
 class ChatResponse(BaseModel):

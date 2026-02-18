@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -243,6 +244,56 @@ class DataManager:
         if table_name in self.metadata:
             return self.metadata[table_name]
         return None
+
+    def _build_upload_table_name(self, filename: str) -> str:
+        """根据文件名生成安全且唯一的表名"""
+        base = os.path.splitext(os.path.basename(filename))[0].lower()
+        cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", base).strip("_")
+        if not cleaned:
+            cleaned = "upload"
+        if cleaned[0].isdigit():
+            cleaned = f"t_{cleaned}"
+        return f"upload_{cleaned}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    def import_uploaded_file(
+        self, file_content: bytes, file_type: str, filename: str
+    ) -> Dict[str, Any]:
+        """将上传文件直接写入主数据库并登记 metadata"""
+        if self.engine is None:
+            return {"success": False, "error": "数据库引擎未初始化"}
+
+        try:
+            if file_type == "csv":
+                df = pd.read_csv(pd.io.common.BytesIO(file_content))
+            elif file_type in ["excel", "xlsx", "xls"]:
+                df = pd.read_excel(pd.io.common.BytesIO(file_content))
+            else:
+                return {"success": False, "error": f"Unsupported file type: {file_type}"}
+
+            table_name = self._build_upload_table_name(filename)
+            df.columns = [
+                re.sub(r"[^a-zA-Z0-9_]+", "_", str(col)).strip("_") or f"col_{idx}"
+                for idx, col in enumerate(df.columns)
+            ]
+            df.to_sql(table_name, self.engine, if_exists="replace", index=False)
+
+            self.metadata[table_name] = {
+                "name": filename,
+                "description": "用户上传的文件（已合并入主数据库）",
+                "columns": df.columns.tolist(),
+                "rows": int(len(df)),
+                "source": "upload",
+            }
+
+            return {
+                "success": True,
+                "table_name": table_name,
+                "headers": df.columns.tolist(),
+                "total_columns": len(df.columns),
+                "estimated_rows": int(len(df)),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def delete_table(self, table_name: str) -> Dict[str, Any]:
         """删除数据库中的数据表"""
