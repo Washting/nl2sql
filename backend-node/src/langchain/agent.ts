@@ -1,6 +1,4 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
-import { DynamicTool } from "@langchain/core/tools";
 import { DataSource } from "typeorm";
 import { SQLDatabaseToolkit } from "./SQLDatabaseToolkit";
 
@@ -131,6 +129,8 @@ ${queryResult}
 
                 // Parse query result to extract data
                 const data = parseQueryResult(queryResult);
+                console.log(`[SQLAgent] Parsed data: ${data.length} rows`);
+                console.log(`[SQLAgent] Data sample:`, data.slice(0, 2));
 
                 return {
                     success: true,
@@ -190,23 +190,40 @@ function parseQueryResult(resultString: string): any[] {
         }
 
         // Extract column names from header row
+        // Split by | and filter out empty strings (from leading/trailing |)
         const headerLine = lines[0];
         const columns = headerLine.split('|')
             .map(col => col.trim())
-            .filter(col => col);
+            .filter(col => col.length > 0);
 
         // Skip separator line (lines[1])
         // Parse data rows
         const data: any[] = [];
         for (let i = 2; i < lines.length; i++) {
-            const values = lines[i].split('|')
-                .map(val => val.trim())
-                .filter(val => val);
+            const line = lines[i];
+
+            // Skip empty lines or separator lines
+            if (!line.trim() || line.match(/^\|[\s-|]+\|?$/)) {
+                continue;
+            }
+
+            // Split by | and filter, but keep empty string values
+            const rawValues = line.split('|');
+            // Remove first and last elements if they're empty (from leading/trailing |)
+            const values = rawValues.slice(1, -1).map(val => val.trim());
 
             if (values.length === columns.length) {
                 const row: any = {};
                 columns.forEach((col, idx) => {
-                    row[col] = values[idx];
+                    // Try to convert to number if possible
+                    const val = values[idx];
+                    if (val === '' || val === null || val === undefined) {
+                        row[col] = null;
+                    } else if (!isNaN(Number(val))) {
+                        row[col] = Number(val);
+                    } else {
+                        row[col] = val;
+                    }
                 });
                 data.push(row);
             }

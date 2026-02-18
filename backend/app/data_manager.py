@@ -244,6 +244,27 @@ class DataManager:
             return self.metadata[table_name]
         return None
 
+    def delete_table(self, table_name: str) -> Dict[str, Any]:
+        """删除数据库中的数据表"""
+        if self.engine is None:
+            return {"success": False, "error": "数据库引擎未初始化"}
+
+        if table_name not in self.metadata:
+            return {"success": False, "error": "表不存在"}
+
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+
+            if table_name in self.data_cache:
+                del self.data_cache[table_name]
+            if table_name in self.metadata:
+                del self.metadata[table_name]
+
+            return {"success": True, "message": f"表 {table_name} 已删除"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 # 创建全局数据管理器实例
 data_manager = DataManager()

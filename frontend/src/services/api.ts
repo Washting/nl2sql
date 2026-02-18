@@ -65,11 +65,19 @@ export interface QueryResponse {
     data?: any[];
     answer?: string;
     sql?: string;
+    reasoning?: string[];
     total_rows?: number;
     returned_rows?: number;
     columns?: string[];
     error?: string;
     visualization?: string;
+}
+
+export interface QueryStreamHandlers {
+    onStatus?: (message: string) => void;
+    onAnswerDelta?: (delta: string) => void;
+    onResult?: (result: QueryResponse) => void;
+    onError?: (message: string) => void;
 }
 
 export interface VisualizationRequest {
@@ -120,12 +128,18 @@ export interface FileInfo {
     estimated_rows: number;
 }
 
+export interface DeleteTableResponse {
+    success: boolean;
+    message?: string;
+    error?: string;
+}
+
 // API服务
 export const api = {
     // 获取数据源列表
     async getDataSources(): Promise<{ success: boolean; sources: any[] }> {
         const response = await apiClient.get("/datasources");
-        return response;
+        return response as unknown as { success: boolean; sources: any[] };
     },
 
     // 上传文件
@@ -149,7 +163,87 @@ export const api = {
         console.log("API.queryData - 完整URL:", `${API_BASE_URL}/query`);
         const response = await apiClient.post("/query", request);
         console.log("API.queryData - 响应:", response);
-        return response;
+        return response as unknown as QueryResponse;
+    },
+
+    // 流式查询数据
+    async queryDataStream(
+        request: QueryRequest,
+        handlers: QueryStreamHandlers = {},
+    ): Promise<QueryResponse | null> {
+        const response = await fetch(`${API_BASE_URL}/query/stream`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(request),
+        });
+
+        if (!response.ok || !response.body) {
+            const errorText = await response.text();
+            throw new Error(errorText || "流式查询请求失败");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let finalResult: QueryResponse | null = null;
+
+        const processEvent = (rawEvent: string) => {
+            const lines = rawEvent.split("\n");
+            let eventName = "message";
+            const dataLines: string[] = [];
+
+            for (const line of lines) {
+                if (line.startsWith("event:")) {
+                    eventName = line.slice(6).trim();
+                } else if (line.startsWith("data:")) {
+                    dataLines.push(line.slice(5).trim());
+                }
+            }
+
+            if (dataLines.length === 0) return;
+
+            const payload = JSON.parse(dataLines.join("\n"));
+            if (eventName === "status") {
+                handlers.onStatus?.(payload.message || "");
+                return;
+            }
+            if (eventName === "answer_delta") {
+                handlers.onAnswerDelta?.(payload.delta || "");
+                return;
+            }
+            if (eventName === "result") {
+                finalResult = payload as QueryResponse;
+                handlers.onResult?.(finalResult);
+                return;
+            }
+            if (eventName === "error") {
+                const errorMessage = payload.message || "流式查询失败";
+                handlers.onError?.(errorMessage);
+                throw new Error(errorMessage);
+            }
+        };
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || "";
+
+            for (const eventText of events) {
+                if (!eventText.trim()) continue;
+                processEvent(eventText);
+            }
+        }
+
+        if (buffer.trim()) {
+            processEvent(buffer);
+        }
+
+        return finalResult;
     },
 
     // 创建可视化
@@ -157,19 +251,19 @@ export const api = {
         request: VisualizationRequest,
     ): Promise<VisualizationResponse> {
         const response = await apiClient.post("/visualize", request);
-        return response;
+        return response as unknown as VisualizationResponse;
     },
 
     // 聊天对话
     async chat(request: ChatRequest): Promise<ChatResponse> {
         const response = await apiClient.post("/chat", request);
-        return response;
+        return response as unknown as ChatResponse;
     },
 
     // 获取文件列表
     async getFiles(): Promise<{ files: FileInfo[] }> {
         const response = await apiClient.get("/files");
-        return response;
+        return response as unknown as { files: FileInfo[] };
     },
 
     // 删除文件
@@ -177,7 +271,12 @@ export const api = {
         fileId: string,
     ): Promise<{ success: boolean; message: string }> {
         const response = await apiClient.delete(`/files/${fileId}`);
-        return response;
+        return response as unknown as { success: boolean; message: string };
+    },
+
+    async deleteTable(tableName: string): Promise<DeleteTableResponse> {
+        const response = await apiClient.delete(`/tables/${tableName}`);
+        return response as unknown as DeleteTableResponse;
     },
 
     // 健康检查
@@ -188,7 +287,12 @@ export const api = {
         active_sessions: number;
     }> {
         const response = await apiClient.get("/health");
-        return response;
+        return response as unknown as {
+            status: string;
+            files_loaded: number;
+            active_agents: number;
+            active_sessions: number;
+        };
     },
 };
 

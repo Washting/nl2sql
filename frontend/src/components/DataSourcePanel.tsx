@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, Database, Table2, Upload, Search, FileSpreadsheet } from 'lucide-react';
+import { useState, useEffect, Fragment } from 'react';
+import { ChevronRight, ChevronDown, Database, Table2, Upload, Search, FileSpreadsheet, Trash2 } from 'lucide-react';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from './ui/hover-card';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+import { Popconfirm } from './ui/popconfirm';
 import { api } from '../services/api';
 
 interface TableNode {
@@ -10,6 +12,7 @@ interface TableNode {
   type: 'schema' | 'table' | 'column';
   children?: TableNode[];
   tableName?: string; // 实际的数据库表名
+  source?: DataSource['source'];
   metadata?: {
     fields?: number;
     rows?: number;
@@ -27,15 +30,19 @@ interface DataSource {
 }
 
 interface DataSourcePanelProps {
-  onTableSelect?: (tableName: string) => void;
+  onTableSelect?: (tableName: string | null) => void;
+  isCollapsed?: boolean;
+  selectedTable?: string | null;
 }
 
-export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['数据库表', '上传的文件']));
+export function DataSourcePanel({ onTableSelect, isCollapsed = false, selectedTable: externalSelectedTable }: DataSourcePanelProps) {
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['上传的文件']));
   const [searchQuery, setSearchQuery] = useState('');
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [hoveringDeleteTable, setHoveringDeleteTable] = useState<string | null>(null);
+  const [activePopconfirmTable, setActivePopconfirmTable] = useState<string | null>(null);
 
   useEffect(() => {
     loadDataSources();
@@ -66,36 +73,62 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
   };
 
   const convertToTableNodes = (sources: DataSource[]): TableNode[] => {
-    // 按source分组
-    const grouped = sources.reduce((acc, source) => {
-      const category = source.source === 'upload' ? '上传的文件' : '数据库表';
-      if (!acc[category]) {
-        acc[category] = [];
-      }
-      acc[category].push(source);
-      return acc;
-    }, {} as Record<string, DataSource[]>);
+    const toTableNode = (source: DataSource): TableNode => ({
+      name: source.name,
+      type: 'table' as const,
+      tableName: source.table, // 实际的数据库表名
+      source: source.source,
+      metadata: {
+        fields: Array.isArray(source.columns) ? source.columns.length : 0,
+        rows: source.rows || 0,
+        sample: Array.isArray(source.columns)
+          ? source.columns.slice(0, 3).join(', ') + (source.columns.length > 3 ? '...' : '')
+          : ''
+      },
+      children: Array.isArray(source.columns) ? source.columns.map(column => ({
+        name: column,
+        type: 'column' as const
+      })) : []
+    });
 
-    return Object.entries(grouped).map(([category, sources]) => ({
-      name: category,
-      type: 'schema' as const,
-      children: sources.map(source => ({
-        name: source.name,
-        type: 'table' as const,
-        tableName: source.table, // 实际的数据库表名
-        metadata: {
-          fields: Array.isArray(source.columns) ? source.columns.length : 0,
-          rows: source.rows || 0,
-          sample: Array.isArray(source.columns)
-            ? source.columns.slice(0, 3).join(', ') + (source.columns.length > 3 ? '...' : '')
-            : ''
-        },
-        children: Array.isArray(source.columns) ? source.columns.map(column => ({
-          name: column,
-          type: 'column' as const
-        })) : []
-      }))
-    }));
+    const databaseTables = sources
+      .filter(source => source.source !== 'upload')
+      .map(toTableNode);
+    const uploadedTables = sources
+      .filter(source => source.source === 'upload')
+      .map(toTableNode);
+
+    return [
+      ...databaseTables,
+      ...(uploadedTables.length > 0
+        ? [{
+          name: '上传的文件',
+          type: 'schema' as const,
+          children: uploadedTables
+        }]
+        : [])
+    ];
+  };
+
+  const handleDeleteTable = async (tableName: string) => {
+    try {
+      const result = await api.deleteTable(tableName);
+      if (!result.success) {
+        throw new Error(result.error || '删除失败');
+      }
+
+      if ((externalSelectedTable || selectedTable) === tableName) {
+        setSelectedTable(null);
+        onTableSelect?.(null);
+      }
+      await loadDataSources();
+    } catch (error) {
+      console.error('删除表失败:', error);
+      alert(`删除表失败: ${error}`);
+    } finally {
+      setActivePopconfirmTable((prev) => (prev === tableName ? null : prev));
+      setHoveringDeleteTable((prev) => (prev === tableName ? null : prev));
+    }
   };
 
   const filteredDataSources = convertToTableNodes(dataSources).filter(ds =>
@@ -120,12 +153,11 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
 
       // 如果是table节点，优先选择表格
       if (node.type === 'table') {
-        setSelectedTable(node.name);
-        console.log('选中表格:', node.name);
+        const actualTableName = node.tableName || node.name;
+        setSelectedTable(actualTableName);
+        console.log('选中表格:', actualTableName);
 
         if (onTableSelect) {
-          // 使用实际的数据库表名
-          const actualTableName = node.tableName || node.name;
           console.log('传递表名:', actualTableName);
           onTableSelect(actualTableName);
         }
@@ -147,7 +179,7 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
         className="group"
       >
         <div
-          className={`flex items-center gap-2 px-2 py-1.5 hover:bg-secondary/50 cursor-pointer rounded-md transition-colors ${node.type === 'table' && selectedTable === node.name ? 'bg-cyan-500/10 border-l-2 border-cyan-500' : ''
+          className={`flex items-center gap-2 px-2 py-1.5 hover:bg-secondary/50 cursor-pointer rounded-md transition-colors ${node.type === 'table' && selectedTable === (node.tableName || node.name) ? 'bg-cyan-500/10 border-l-2 border-cyan-500' : ''
             }`}
           onClick={handleClick}
         >
@@ -159,13 +191,70 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
           {!hasChildren && <div className="w-3 flex-shrink-0" />}
           {icon}
           <span className="text-foreground/90 dark:text-foreground/80 text-xs truncate">{node.name}</span>
+          {node.type === 'table' && node.source !== 'upload' && node.tableName && (
+            <Popconfirm
+              title={`确认删除数据表「${node.name}」？`}
+              description="此操作不可撤销。"
+              confirmText="继续删除"
+              secondConfirmTitle="二次确认"
+              secondConfirmDescription={`删除后将永久丢失「${node.name}」数据。`}
+              secondConfirmText="确认删除"
+              onConfirm={() => handleDeleteTable(node.tableName!)}
+              onOpenChange={(open) => {
+                if (open) {
+                  setActivePopconfirmTable(node.tableName!);
+                  return;
+                }
+                setActivePopconfirmTable((prev) =>
+                  prev === node.tableName ? null : prev,
+                );
+                setHoveringDeleteTable((prev) =>
+                  prev === node.tableName ? null : prev,
+                );
+              }}
+            >
+              <Button
+                variant="ghost"
+                className="ml-auto h-6 w-6 p-0 text-muted-foreground hover:text-red-500 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-events-none group-hover:pointer-events-auto focus-visible:pointer-events-auto transition-opacity"
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+                onMouseEnter={() => {
+                  setHoveringDeleteTable(node.tableName || null);
+                }}
+                onMouseLeave={() => {
+                  if (activePopconfirmTable === node.tableName) return;
+                  setHoveringDeleteTable((prev) =>
+                    prev === (node.tableName || null) ? null : prev,
+                  );
+                }}
+                title="删除数据表"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+            </Popconfirm>
+          )}
         </div>
       </div>
     );
 
     if (node.type === 'table' && node.metadata) {
+      const shouldDisableHoverCard =
+        !!node.tableName &&
+        (hoveringDeleteTable === node.tableName ||
+          activePopconfirmTable === node.tableName);
+
+      if (shouldDisableHoverCard) {
+        return (
+          <Fragment key={node.name}>
+            {content}
+            {isExpanded && node.children?.map(child => renderTreeNode(child, level + 1))}
+          </Fragment>
+        );
+      }
+
       return (
-        <React.Fragment key={node.name}>
+        <Fragment key={node.name}>
           <HoverCard openDelay={300}>
             <HoverCardTrigger asChild>
               {content}
@@ -191,18 +280,117 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
             </HoverCardContent>
           </HoverCard>
           {isExpanded && node.children?.map(child => renderTreeNode(child, level + 1))}
-        </React.Fragment>
+        </Fragment>
       );
     }
 
     return (
-      <React.Fragment key={node.name}>
+      <Fragment key={node.name}>
         {content}
         {isExpanded && node.children?.map(child => renderTreeNode(child, level + 1))}
-      </React.Fragment>
+      </Fragment>
     );
   };
 
+  // 获取所有表格用于折叠视图
+  const getAllTables = (): Array<{ name: string; tableName: string; source: string; icon: React.ReactNode }> => {
+    const tables: Array<{ name: string; tableName: string; source: string; icon: React.ReactNode }> = [];
+
+    dataSources.forEach(source => {
+      tables.push({
+        name: source.name,
+        tableName: source.table,
+        source: source.source,
+        icon: source.source === 'upload' ? <FileSpreadsheet className="w-5 h-5" /> : <Table2 className="w-5 h-5" />
+      });
+    });
+
+    return tables;
+  };
+
+  const allTables = getAllTables();
+  const currentSelectedTable = externalSelectedTable || selectedTable;
+
+  // 折叠视图
+  if (isCollapsed) {
+    return (
+      <TooltipProvider delayDuration={300}>
+        <div className="h-full flex flex-col bg-background overflow-hidden py-4 items-center gap-3">
+          {loading ? (
+            <div className="text-muted-foreground">
+              <Database className="w-5 h-5 animate-pulse" />
+            </div>
+          ) : (
+            <>
+              {allTables.map((table) => {
+                const isSelected = currentSelectedTable === table.tableName;
+                return (
+                  <Tooltip key={table.tableName}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        onClick={() => {
+                          if (onTableSelect) {
+                            onTableSelect(table.tableName);
+                            setSelectedTable(table.tableName);
+                          }
+                        }}
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 ${
+                          isSelected
+                            ? 'bg-cyan-500/20 text-cyan-500 border-2 border-cyan-500/50 shadow-lg shadow-cyan-500/20'
+                            : 'bg-secondary/50 text-muted-foreground hover:bg-primary/20 hover:text-primary border border-border/30'
+                        }`}
+                      >
+                        {table.icon}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="bg-popover border-border/50 text-foreground">
+                      <p className="text-sm font-medium">{table.name}</p>
+                      <p className="text-xs text-muted-foreground">{table.source === 'upload' ? '上传文件' : '数据库表'}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })}
+
+              {/* 上传按钮 */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={() => {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = '.csv,.xlsx,.xls';
+                      input.onchange = async (e: any) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                          try {
+                            await api.uploadFile(file);
+                            loadDataSources();
+                          } catch (error) {
+                            console.error('上传失败:', error);
+                            alert('上传失败: ' + error);
+                          }
+                        }
+                      };
+                      input.click();
+                    }}
+                    className="w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 bg-green-500/10 text-green-500 border border-green-500/30 hover:bg-green-500/20 hover:border-green-500/50"
+                  >
+                    <Upload className="w-5 h-5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="bg-popover border-border/50 text-foreground">
+                  <p className="text-sm">上传文件</p>
+                  <p className="text-xs text-muted-foreground">CSV / Excel</p>
+                </TooltipContent>
+              </Tooltip>
+            </>
+          )}
+        </div>
+      </TooltipProvider>
+    );
+  }
+
+  // 展开视图
   if (loading) {
     return (
       <div className="h-full flex flex-col bg-background overflow-hidden">
@@ -230,8 +418,9 @@ export function DataSourcePanel({ onTableSelect }: DataSourcePanelProps) {
           <Input
             placeholder="搜索表或段..."
             value={searchQuery}
+            type="search"
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 h-9 bg-secondary/50 dark:bg-secondary border-border/20 text-foreground placeholder:text-muted-foreground text-sm rounded-lg focus:border-cyan-500/30"
+            className="pl-9 h-9 bg-secondary/50 dark:bg-secondary border-border/20 text-foreground placeholder:text-muted-foreground text-sm rounded-lg"
           />
         </div>
       </div>

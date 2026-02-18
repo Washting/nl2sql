@@ -198,22 +198,22 @@ export class SQLDatabaseToolkit {
         const columnWidths = columns.map(col => {
             const maxWidth = Math.max(
                 col.length,
-                ...result.map(row => String(row[col] || '').length)
+                ...result.map(row => String(row[col] ?? '').length)
             );
-            return maxWidth + 2; // Add padding
+            return maxWidth;
         });
 
         // Header row
         let output = '|';
         columns.forEach((col, i) => {
-            output += col.padEnd(columnWidths[i]) + '|';
+            output += ' ' + col.padEnd(columnWidths[i]) + ' |';
         });
         output += '\n';
 
         // Separator row
         output += '|';
         columns.forEach((col, i) => {
-            output += '-'.repeat(columnWidths[i]) + '|';
+            output += ' ' + '-'.repeat(columnWidths[i]) + ' |';
         });
         output += '\n';
 
@@ -222,7 +222,7 @@ export class SQLDatabaseToolkit {
             output += '|';
             columns.forEach((col, i) => {
                 const value = String(row[col] ?? '');
-                output += value.padEnd(columnWidths[i]) + '|';
+                output += ' ' + value.padEnd(columnWidths[i]) + ' |';
             });
             output += '\n';
         });

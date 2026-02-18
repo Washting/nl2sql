@@ -1,13 +1,16 @@
+import asyncio
 import json
 import logging
 import os
+import re
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from utils.file_processor import FileProcessor
 
 from app.config import settings
@@ -49,6 +52,167 @@ except Exception as e:
 file_store: Dict[str, Dict] = {}
 chat_sessions: Dict[str, Dict] = {}
 sql_agents: Dict[str, SQLAgentManager] = {}
+
+
+def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManager]:
+    """Resolve target agent by file_id/table_name, creating one when needed."""
+    agent_key = None
+
+    # 优先使用 file_id（CSV上传文件）
+    if request.file_id and request.file_id in file_store:
+        agent_key = f"file_{request.file_id}"
+        file_info = file_store[request.file_id]
+
+        logger.info(f"[CSV查询] 处理上传文件: {file_info.get('filename', 'unknown')}")
+        logger.info(f"[CSV查询] 用户问题: {request.query}")
+
+        # 获取或创建SQL Agent
+        if agent_key not in sql_agents:
+            logger.info(f"[CSV查询] 创建新的SQL Agent for {agent_key}")
+            agent = SQLAgentManager(
+                openai_api_key=settings.openai_api_key,
+                openai_base_url=settings.openai_base_url,
+                model=settings.default_model,
+            )
+
+            # 创建数据库（使用更有意义的表名）
+            table_name = f"file_{request.file_id}"
+            db_result = agent.create_database_from_file(
+                file_info["content"], file_info["file_type"], table_name=table_name
+            )
+
+            if not db_result["success"]:
+                raise HTTPException(status_code=500, detail=db_result["error"])
+
+            # 创建SQL Agent
+            agent_result = agent.create_sql_agent()
+
+            if not agent_result["success"]:
+                raise HTTPException(status_code=500, detail=agent_result["error"])
+
+            sql_agents[agent_key] = agent
+        else:
+            logger.info(f"[CSV查询] 重用已有的SQL Agent for {agent_key}")
+
+    # 使用 table_name（从数据库）
+    elif request.table_name:
+        agent_key = f"table_{request.table_name}"
+
+        db_path = None
+        if DATA_MANAGER_AVAILABLE and data_manager:
+            dm_path = os.path.abspath(data_manager.db_path) if data_manager.db_path else None
+            if dm_path and os.path.exists(dm_path):
+                db_path = dm_path
+                logger.info(f"Using data_manager database at: {db_path}")
+
+        if not db_path:
+            raise HTTPException(
+                status_code=404,
+                detail="Database not found. Please initialize the database first.",
+            )
+
+        # 获取或创建SQL Agent
+        if agent_key not in sql_agents:
+            agent = SQLAgentManager(
+                openai_api_key=settings.openai_api_key,
+                openai_base_url=settings.openai_base_url,
+                model=settings.default_model,
+            )
+
+            # 连接到现有数据库
+            from langchain_community.utilities import SQLDatabase
+            from sqlalchemy import create_engine
+
+            db_uri = f"sqlite:///{db_path}"
+            agent.db = SQLDatabase.from_uri(db_uri)
+            # 创建 SQLAlchemy 连接用于 execute_sql
+            agent.db_connection = create_engine(db_uri)
+
+            # 创建SQL Agent
+            agent_result = agent.create_sql_agent()
+            if not agent_result["success"]:
+                raise HTTPException(status_code=500, detail=agent_result["error"])
+
+            sql_agents[agent_key] = agent
+            logger.info(f"Created SQL Agent for table: {request.table_name}")
+
+    else:
+        raise HTTPException(
+            status_code=400, detail="Either file_id or table_name must be provided"
+        )
+
+    return agent_key, sql_agents[agent_key]
+
+
+def _run_query(request: QueryRequest) -> Dict[str, Any]:
+    """Execute query and return payload compatible with QueryResponse."""
+    agent_key, agent = _resolve_or_create_agent(request)
+
+    # 执行查询
+    is_csv_query = agent_key.startswith("file_")
+    if is_csv_query:
+        logger.info("[CSV查询] 开始执行查询...")
+    logger.info(f"Executing query: {request.query} on {agent_key}")
+
+    result = agent.query_data(request.query)
+
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    # 获取查询结果
+    data = result.get("data", [])
+    columns = result.get("columns", [])
+    sql = result.get("sql")
+    answer = result.get("answer", "")
+    reasoning = result.get("reasoning", [])
+
+    if is_csv_query:
+        logger.info(
+            f"[CSV查询] 查询完成: SQL={sql[:50] if sql else None}..., 数据行数={len(data)}, 答案长度={len(answer) if answer else 0}"
+        )
+
+    logger.info(
+        f"Query result: data rows={len(data)}, columns={len(columns)}, has_sql={bool(sql)}, has_answer={bool(answer)}"
+    )
+    if answer:
+        logger.info(f"Answer preview: {answer[:200]}...")
+
+    # 如果有 SQL 但没有数据，尝试执行 SQL 获取数据
+    if sql and not data:
+        try:
+            logger.info(f"Executing SQL to get data: {sql[:100]}...")
+            sql_result = agent.execute_sql(sql)
+            if sql_result["success"]:
+                data = sql_result["data"]
+                columns = sql_result["columns"]
+                logger.info(f"SQL execution successful: {len(data)} rows retrieved")
+        except Exception as e:
+            logger.warning(f"Could not execute SQL to get data: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    # 确保数据格式正确
+    if data and not columns:
+        columns = list(data[0].keys()) if data else []
+
+    # 不要在后端再次截断数据，使用 SQL 中的 LIMIT
+    final_data = data
+
+    return QueryResponse(
+        success=True,
+        answer=answer,
+        sql=sql,
+        reasoning=reasoning,
+        data=final_data,
+        returned_rows=len(final_data),
+        columns=columns,
+        total_rows=len(final_data),
+    ).model_dump()
+
+
+def _to_sse(event: str, payload: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @asynccontextmanager
@@ -165,6 +329,33 @@ async def get_data_sources():
     return {"success": True, "sources": sources}
 
 
+@app.delete("/tables/{table_name}")
+async def delete_table(table_name: str):
+    """删除数据库表（仅数据库中的物理表，不包含上传文件缓存）"""
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", table_name):
+        raise HTTPException(status_code=400, detail="Invalid table name")
+
+    if not DATA_MANAGER_AVAILABLE or not data_manager:
+        raise HTTPException(status_code=500, detail="Data manager is not available")
+
+    table_info = data_manager.get_table_info(table_name)
+    if not table_info:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    result = data_manager.delete_table(table_name)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Delete table failed")
+        )
+
+    agent_key = f"table_{table_name}"
+    if agent_key in sql_agents:
+        sql_agents[agent_key].cleanup()
+        del sql_agents[agent_key]
+
+    return {"success": True, "message": result.get("message", "Table deleted")}
+
+
 @app.post("/upload", response_model=FileUploadResponse)
 async def upload_file(file: UploadFile = File(...)):
     """
@@ -221,165 +412,7 @@ async def query_data(request: QueryRequest):
     使用自然语言查询数据（支持文件上传和数据库表）
     """
     try:
-        agent_key = None
-
-        # 优先使用 file_id（CSV上传文件）
-        if request.file_id and request.file_id in file_store:
-            agent_key = f"file_{request.file_id}"
-            file_info = file_store[request.file_id]
-
-            logger.info(
-                f"[CSV查询] 处理上传文件: {file_info.get('filename', 'unknown')}"
-            )
-            logger.info(f"[CSV查询] 用户问题: {request.query}")
-
-            # 获取或创建SQL Agent
-            if agent_key not in sql_agents:
-                logger.info(f"[CSV查询] 创建新的SQL Agent for {agent_key}")
-                agent = SQLAgentManager(
-                    openai_api_key=settings.openai_api_key,
-                    openai_base_url=settings.openai_base_url,
-                    model=settings.default_model,
-                )
-
-                # 创建数据库（使用更有意义的表名）
-                table_name = f"file_{request.file_id}"
-                db_result = agent.create_database_from_file(
-                    file_info["content"], file_info["file_type"], table_name=table_name
-                )
-
-                if not db_result["success"]:
-                    raise HTTPException(status_code=500, detail=db_result["error"])
-
-                # 创建SQL Agent
-                agent_result = agent.create_sql_agent()
-
-                if not agent_result["success"]:
-                    raise HTTPException(status_code=500, detail=agent_result["error"])
-
-                sql_agents[agent_key] = agent
-            else:
-                logger.info(f"[CSV查询] 重用已有的SQL Agent for {agent_key}")
-
-        # 使用 table_name（从数据库）
-        elif request.table_name:
-            agent_key = f"table_{request.table_name}"
-
-            # 检查数据库路径
-            db_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "data", "sales_data.db"
-            )
-
-            if not os.path.exists(db_path):
-                # 如果数据库不存在，尝试使用 data_manager
-                if DATA_MANAGER_AVAILABLE and data_manager:
-                    logger.info(f"Using data_manager for table: {request.table_name}")
-                    # 使用 data_manager 的数据库路径
-                    db_path = (
-                        data_manager.db_path
-                        if hasattr(data_manager, "db_path")
-                        else None
-                    )
-
-                    if not db_path or not os.path.exists(db_path):
-                        raise HTTPException(
-                            status_code=404,
-                            detail="Database not found. Please initialize the database first.",
-                        )
-                else:
-                    raise HTTPException(status_code=404, detail="Database not found")
-
-            # 获取或创建SQL Agent
-            if agent_key not in sql_agents:
-                agent = SQLAgentManager(
-                    openai_api_key=settings.openai_api_key,
-                    openai_base_url=settings.openai_base_url,
-                    model=settings.default_model,
-                )
-
-                # 连接到现有数据库
-                from langchain_community.utilities import SQLDatabase
-
-                db_uri = f"sqlite:///{db_path}"
-                agent.db = SQLDatabase.from_uri(db_uri)
-                agent.temp_db_path = db_path
-
-                # 创建SQL Agent
-                agent_result = agent.create_sql_agent()
-                if not agent_result["success"]:
-                    raise HTTPException(status_code=500, detail=agent_result["error"])
-
-                sql_agents[agent_key] = agent
-                logger.info(f"Created SQL Agent for table: {request.table_name}")
-
-        else:
-            raise HTTPException(
-                status_code=400, detail="Either file_id or table_name must be provided"
-            )
-
-        agent = sql_agents[agent_key]
-
-        # 执行查询
-        is_csv_query = agent_key.startswith("file_")
-        if is_csv_query:
-            logger.info(f"[CSV查询] 开始执行查询...")
-        logger.info(f"Executing query: {request.query} on {agent_key}")
-
-        result = agent.query_data(request.query)
-
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-
-        # 获取查询结果
-        data = result.get("data", [])
-        columns = result.get("columns", [])
-        sql = result.get("sql")
-        answer = result.get("answer", "")
-        reasoning = result.get("reasoning", [])
-
-        if is_csv_query:
-            logger.info(
-                f"[CSV查询] 查询完成: SQL={sql[:50] if sql else None}..., 数据行数={len(data)}, 答案长度={len(answer) if answer else 0}"
-            )
-
-        logger.info(
-            f"Query result: data rows={len(data)}, columns={len(columns)}, has_sql={bool(sql)}, has_answer={bool(answer)}"
-        )
-        if answer:
-            logger.info(f"Answer preview: {answer[:200]}...")
-
-        # 如果有 SQL 但没有数据，尝试执行 SQL 获取数据
-        if sql and not data:
-            try:
-                logger.info(f"Executing SQL to get data: {sql[:100]}...")
-                sql_result = agent.execute_sql(sql)
-                if sql_result["success"]:
-                    data = sql_result["data"]
-                    columns = sql_result["columns"]
-                    logger.info(f"SQL execution successful: {len(data)} rows retrieved")
-            except Exception as e:
-                logger.warning(f"Could not execute SQL to get data: {e}")
-                import traceback
-
-                traceback.print_exc()
-
-        # 确保数据格式正确
-        if data and not columns:
-            columns = list(data[0].keys()) if data else []
-
-        # 不要在后端再次截断数据，使用 SQL 中的 LIMIT
-        final_data = data
-
-        return QueryResponse(
-            success=True,
-            answer=answer,
-            sql=sql,
-            reasoning=reasoning,
-            data=final_data,
-            returned_rows=len(final_data),
-            columns=columns,
-            total_rows=len(final_data),
-        )
+        return QueryResponse(**_run_query(request))
 
     except HTTPException:
         raise
@@ -389,6 +422,53 @@ async def query_data(request: QueryRequest):
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/query/stream")
+async def query_data_stream(request: QueryRequest):
+    """
+    流式查询接口：先返回阶段进度，再返回完整查询结果。
+    """
+
+    async def event_generator():
+        stages = [
+            (0.0, "已接收请求，开始准备查询上下文..."),
+            (0.8, "正在解析问题并识别字段语义..."),
+            (2.0, "正在生成 SQL 并校验可执行性..."),
+            (4.0, "正在执行查询与汇总分析..."),
+        ]
+        next_stage_idx = 0
+        start = time.monotonic()
+        query_task = asyncio.create_task(asyncio.to_thread(_run_query, request))
+
+        try:
+            while not query_task.done():
+                elapsed = time.monotonic() - start
+                while next_stage_idx < len(stages) and elapsed >= stages[next_stage_idx][0]:
+                    yield _to_sse("status", {"message": stages[next_stage_idx][1]})
+                    next_stage_idx += 1
+                await asyncio.sleep(0.25)
+
+            result = await query_task
+            answer = result.get("answer") or ""
+
+            if answer:
+                for i in range(0, len(answer), 24):
+                    yield _to_sse("answer_delta", {"delta": answer[i : i + 24]})
+                    await asyncio.sleep(0.01)
+
+            yield _to_sse("result", result)
+            yield _to_sse("done", {"message": "查询完成"})
+        except HTTPException as e:
+            yield _to_sse(
+                "error",
+                {"message": str(e.detail) if hasattr(e, "detail") else str(e)},
+            )
+        except Exception as e:
+            logger.error(f"Error streaming query: {e}")
+            yield _to_sse("error", {"message": str(e)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/visualize", response_model=VisualizationResponse)
