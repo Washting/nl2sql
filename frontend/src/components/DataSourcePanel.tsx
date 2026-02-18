@@ -18,6 +18,7 @@ interface TableNode {
     fields?: number;
     rows?: number;
     sample?: string;
+    sampleQuestions?: string[];
   };
 }
 
@@ -26,6 +27,8 @@ interface DataSource {
   table: string;
   rows: number;
   columns: string[];
+  table_comment_cn?: string;
+  sample_questions?: string[];
   column_comments?: Record<string, string>;
   description: string;
   source: string;
@@ -33,6 +36,7 @@ interface DataSource {
 
 interface DataSourcePanelProps {
   onTableSelect?: (tableName: string | null) => void;
+  onSampleQuestionsChange?: (questions: string[]) => void;
   isCollapsed?: boolean;
   selectedTable?: string | null;
   onUploadStateChange?: (uploading: boolean, filename?: string) => void;
@@ -40,6 +44,7 @@ interface DataSourcePanelProps {
 
 export function DataSourcePanel({
   onTableSelect,
+  onSampleQuestionsChange,
   isCollapsed = false,
   selectedTable: externalSelectedTable,
   onUploadStateChange,
@@ -56,6 +61,18 @@ export function DataSourcePanel({
   useEffect(() => {
     loadDataSources();
   }, []);
+
+  useEffect(() => {
+    const activeTable = externalSelectedTable || selectedTable;
+    if (!activeTable) {
+      onSampleQuestionsChange?.([]);
+      return;
+    }
+    const source = dataSources.find((item) => item.table === activeTable);
+    onSampleQuestionsChange?.(
+      Array.isArray(source?.sample_questions) ? source.sample_questions : [],
+    );
+  }, [dataSources, externalSelectedTable, selectedTable, onSampleQuestionsChange]);
 
   const loadDataSources = async () => {
     try {
@@ -123,7 +140,10 @@ export function DataSourcePanel({
       metadata: {
         fields: Array.isArray(source.columns) ? source.columns.length : 0,
         rows: source.rows || 0,
-        sample: Array.isArray(source.columns)
+        sampleQuestions: Array.isArray(source.sample_questions) ? source.sample_questions : [],
+        sample: Array.isArray(source.sample_questions) && source.sample_questions.length > 0
+          ? source.sample_questions[0]
+          : Array.isArray(source.columns)
           ? source.columns
             .slice(0, 3)
             .map((column) => source.column_comments?.[column] || column)
@@ -190,6 +210,7 @@ export function DataSourcePanel({
           console.log('传递表名:', actualTableName);
           onTableSelect(actualTableName);
         }
+        onSampleQuestionsChange?.(node.metadata?.sampleQuestions || []);
 
         // 如果table有子节点（字段），也展开/折叠
         if (hasChildren) {
@@ -269,6 +290,7 @@ export function DataSourcePanel({
       const shouldDisableHoverCard = !!node.tableName &&
         (hoveringDeleteTable === node.tableName ||
           activePopconfirmTable === node.tableName);
+      console.log({ node })
 
       return (
         <Fragment key={node.name}>
@@ -290,8 +312,8 @@ export function DataSourcePanel({
                   </div>
                 </div>
                 <div>
-                  <p className="text-muted-foreground text-xs">示例字段:</p>
-                  <p className="text-purple-500 dark:text-purple-300 text-xs font-mono mt-1">{node.metadata.sample}</p>
+                  <p className="text-muted-foreground text-xs">字段信息:</p>
+                  <p className="text-purple-500 dark:text-purple-300 text-xs font-mono mt-1">{node.children?.map(it => it.name)?.join('、')}</p>
                 </div>
               </div>
             </HoverCardContent>
@@ -350,6 +372,8 @@ export function DataSourcePanel({
                             onTableSelect(table.tableName);
                             setSelectedTable(table.tableName);
                           }
+                          const source = dataSources.find((item) => item.table === table.tableName);
+                          onSampleQuestionsChange?.(source?.sample_questions || []);
                         }}
                         className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 ${
                           isSelected

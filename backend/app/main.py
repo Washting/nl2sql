@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from utils.file_processor import FileProcessor
 
 from app.config import settings
+from app.mlflow_debugger import mlflow_debugger
 from app.models import (
     ChatMessage,
     ChatRequest,
@@ -37,9 +38,6 @@ logger = logging.getLogger(__name__)
 DATA_MANAGER_AVAILABLE = False
 data_manager = None
 try:
-    import sys
-
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from app.data_manager import data_manager as dm
 
     data_manager = dm
@@ -63,7 +61,9 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
 
         db_path = None
         if DATA_MANAGER_AVAILABLE and data_manager:
-            dm_path = os.path.abspath(data_manager.db_path) if data_manager.db_path else None
+            dm_path = (
+                os.path.abspath(data_manager.db_path) if data_manager.db_path else None
+            )
             if dm_path and os.path.exists(dm_path):
                 db_path = dm_path
                 logger.info(f"Using data_manager database at: {db_path}")
@@ -79,7 +79,8 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
             agent = SQLAgentManager(
                 openai_api_key=settings.openai_api_key,
                 openai_base_url=settings.openai_base_url,
-                model=settings.default_model,
+                model=settings.reasoning_model,
+                temperature=settings.reasoning_temperature,
             )
 
             # 连接到现有数据库
@@ -100,9 +101,7 @@ def _resolve_or_create_agent(request: QueryRequest) -> tuple[str, SQLAgentManage
             logger.info(f"Created SQL Agent for table: {request.table_name}")
 
     else:
-        raise HTTPException(
-            status_code=400, detail="table_name must be provided"
-        )
+        raise HTTPException(status_code=400, detail="table_name must be provided")
 
     return agent_key, sql_agents[agent_key]
 
@@ -176,6 +175,13 @@ async def lifespan(app: FastAPI):
     # 创建必要的目录
     os.makedirs("data/uploads", exist_ok=True)
     os.makedirs("data/visualizations", exist_ok=True)
+
+    mlflow_debugger.configure(
+        enabled=settings.mlflow_enabled,
+        tracking_uri=settings.mlflow_tracking_uri,
+        experiment_name=settings.mlflow_experiment_name,
+        run_name_prefix=settings.mlflow_run_name_prefix,
+    )
     logger.info("Application startup complete")
     yield
     # 清理资源
@@ -200,58 +206,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# 路由定义
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """根路径，返回简单的API文档"""
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SQL Agent API</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            h1 { color: #333; }
-            .endpoint { margin: 20px 0; padding: 10px; background: #f5f5f5; border-radius: 5px; }
-            code { background: #e8e8e8; padding: 2px 5px; }
-        </style>
-    </head>
-    <body>
-        <h1>SQL Agent API</h1>
-        <p>基于LangChain的SQL数据分析服务</p>
-
-        <h2>API端点</h2>
-
-        <div class="endpoint">
-            <h3>POST /upload</h3>
-            <p>上传CSV或Excel文件</p>
-            <code>Content-Type: multipart/form-data</code>
-        </div>
-
-        <div class="endpoint">
-            <h3>POST /query</h3>
-            <p>使用自然语言查询数据</p>
-            <code>Content-Type: application/json</code>
-        </div>
-
-        <div class="endpoint">
-            <h3>POST /visualize</h3>
-            <p>创建数据可视化图表</p>
-            <code>Content-Type: application/json</code>
-        </div>
-
-        <div class="endpoint">
-            <h3>POST /chat</h3>
-            <p>与数据对话分析</p>
-            <code>Content-Type: application/json</code>
-        </div>
-
-        <p><a href="/docs">查看完整API文档</a></p>
-    </body>
-    </html>
-    """
 
 
 @app.get("/datasources")
@@ -323,8 +277,8 @@ async def upload_file(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=header_result["error"])
 
         # 直接导入主数据库
-        import_result = data_manager.import_uploaded_file(
-            content, file_type_str, file.filename
+        import_result = await asyncio.to_thread(
+            data_manager.import_uploaded_file, content, file_type_str, file.filename
         )
         if not import_result.get("success"):
             raise HTTPException(
@@ -341,9 +295,12 @@ async def upload_file(file: UploadFile = File(...)):
             table_comment_cn=import_result.get("table_comment_cn"),
             message=f"File '{file.filename}' uploaded successfully",
             headers=import_result.get("headers", header_result["headers"]),
+            sample_questions=import_result.get("sample_questions"),
             column_comments=import_result.get("column_comments"),
             column_info=import_result.get("column_info", header_result["column_info"]),
-            total_columns=import_result.get("total_columns", header_result["total_columns"]),
+            total_columns=import_result.get(
+                "total_columns", header_result["total_columns"]
+            ),
             estimated_rows=import_result.get(
                 "estimated_rows", header_result["estimated_rows"]
             ),
@@ -394,7 +351,10 @@ async def query_data_stream(request: QueryRequest):
         try:
             while not query_task.done():
                 elapsed = time.monotonic() - start
-                while next_stage_idx < len(stages) and elapsed >= stages[next_stage_idx][0]:
+                while (
+                    next_stage_idx < len(stages)
+                    and elapsed >= stages[next_stage_idx][0]
+                ):
                     yield _to_sse("status", {"message": stages[next_stage_idx][1]})
                     next_stage_idx += 1
                 await asyncio.sleep(0.25)
@@ -473,7 +433,10 @@ async def chat_with_data(request: ChatRequest):
 
         # 初始化会话
         if session_id not in chat_sessions:
-            chat_sessions[session_id] = {"messages": [], "table_name": request.table_name}
+            chat_sessions[session_id] = {
+                "messages": [],
+                "table_name": request.table_name,
+            }
 
         session = chat_sessions[session_id]
 

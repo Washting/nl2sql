@@ -22,21 +22,16 @@ interface StreamState {
 
 interface QueryPanelProps {
   selectedTable?: string | null;
+  sampleQuestions?: string[];
   onQueryResult?: (result: any) => void;
   isLeftPanelCollapsed?: boolean;
   onToggleLeftPanel?: () => void;
   onStreamStateChange?: (state: StreamState) => void;
 }
 
-const EXAMPLE_QUESTIONS = [
-  "销售额最高的前10个产品",
-  "好评率超过95%且销量过万的产品",
-  "各品牌在智能手机分类中的销量对比",
-  "折扣率>30%且价格<5000的性价比产品",
-];
-
 export function QueryPanel({
   selectedTable,
+  sampleQuestions = [],
   onQueryResult,
   isLeftPanelCollapsed = false,
   onToggleLeftPanel,
@@ -222,22 +217,24 @@ export function QueryPanel({
 
       <div className="border-t border-border/40 p-6 flex-shrink-0 bg-background/50">
         <div className="space-y-3">
-          <div>
-            <p className="text-xs text-muted-foreground mb-3">💡 示例问答</p>
-            <div className="grid grid-cols-2 gap-2">
-              {EXAMPLE_QUESTIONS.map((question) => (
-                <Button
-                  key={question}
-                  size="sm"
-                  onClick={() => setQuery(question)}
-                  disabled={!selectedTable}
-                  className="text-xs bg-secondary/60 hover:bg-secondary text-foreground/80 border border-border/40 justify-start transition-colors rounded-lg"
-                >
-                  {question}
-                </Button>
-              ))}
+          {sampleQuestions.length > 0 && (
+            <div>
+              <p className="text-xs text-muted-foreground mb-3">💡 示例问答</p>
+              <div className="grid grid-cols-2 gap-2">
+                {sampleQuestions.map((question) => (
+                  <Button
+                    key={question}
+                    size="sm"
+                    onClick={() => setQuery(question)}
+                    disabled={!selectedTable}
+                    className="text-xs bg-secondary/60 hover:bg-secondary text-foreground/80 border border-border/40 justify-start transition-colors rounded-lg"
+                  >
+                    {question}
+                  </Button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           <Textarea
             placeholder={selectedTable ? `输入您的问题，例如：${selectedTable}表中销量最高的产品是什么？` : "请先在左侧选择一个数据表..."}

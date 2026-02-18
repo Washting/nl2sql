@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # Database Configuration
     database_url: str = "sqlite:///./data/sql_agent.db"
+    metadata_database_url: str = "sqlite:///./data/metadata.db"
 
     # FastAPI Configuration
     host: str = "0.0.0.0"
@@ -30,8 +31,16 @@ class Settings(BaseSettings):
     vis_output_dir: str = "./data/visualizations"
 
     # Model Configuration
-    default_model: str = "gpt-3.5-turbo"
-    temperature: float = 0.0
+    performance_model: str = "gpt-4o-mini"
+    reasoning_model: str = "gpt-4o"
+    performance_temperature: float = 0.0
+    reasoning_temperature: float = 0.2
+
+    # MLflow Debug Configuration
+    mlflow_enabled: bool = False
+    mlflow_tracking_uri: str = "file:./data/mlruns"
+    mlflow_experiment_name: str = "nl2sql-llm-debug"
+    mlflow_run_name_prefix: str = "sql-agent"
 
     class Config:
         env_file = ".env"

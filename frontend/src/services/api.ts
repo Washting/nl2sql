@@ -42,6 +42,7 @@ export interface FileUploadResponse {
     table_comment_cn?: string;
     message: string;
     headers?: string[];
+    sample_questions?: string[];
     column_comments?: Record<string, string>;
     column_info?: Array<{
         name: string;
@@ -287,6 +288,7 @@ export const uploadFileHelper = async (file: File) => {
                 tableName: result.table_name!,
                 filename: file.name,
                 headers: result.headers!,
+                sampleQuestions: result.sample_questions || [],
                 columnInfo: result.column_info!,
                 totalColumns: result.total_columns!,
                 estimatedRows: result.estimated_rows!,

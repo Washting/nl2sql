@@ -50,13 +50,33 @@ backend/
 ```env
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
-DEFAULT_MODEL=gpt-4
+PERFORMANCE_MODEL=gpt-4o-mini   # 表/字段命名、示例问题生成
+REASONING_MODEL=gpt-4o          # SQL 生成与分析总结
+PERFORMANCE_TEMPERATURE=0.0
+REASONING_TEMPERATURE=0.2
+METADATA_DATABASE_URL=sqlite:///./data/metadata.db
 HOST=0.0.0.0
 PORT=8000
 DEBUG=true
+
+# MLflow LLM 调试（可选）
+MLFLOW_ENABLED=false
+MLFLOW_TRACKING_URI=file:./data/mlruns
+MLFLOW_EXPERIMENT_NAME=nl2sql-llm-debug
+MLFLOW_RUN_NAME_PREFIX=sql-agent
+MLFLOW_LANGCHAIN_AUTOLOG=false
+```
+
+启用后，`/query` 与 `/query/stream` 的每次请求都会记录输入问题、SQL、答案、耗时等信息到 MLflow。
+可通过以下命令查看：
+
+```bash
+cd backend
+mlflow ui --backend-store-uri ./data/mlruns --port 5001
 ```
 
 ## 说明
 
 - `utils/file_processor.py` 目前仍在使用，`app/main.py` 的 `/upload` 会调用它做表头与字段信息提取。
+- 系统会将表中文名、字段中文名、示例问题写入独立元信息库（`METADATA_DATABASE_URL`），与业务数据 `sales_data.db` 隔离。
 - 本目录中的 `__pycache__` 可安全删除，不影响运行。

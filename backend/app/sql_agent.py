@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from langchain.agents import create_agent  # 新的 API！
+from langchain.chat_models import init_chat_model
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
-from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class SQLAgentManager:
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
         model: str = "gpt-3.5-turbo",
-        temperature: float = 0.7,
+        temperature: float = 0.2,
     ):
         """
         初始化SQL Agent管理器
@@ -47,9 +47,8 @@ class SQLAgentManager:
     def _initialize_llm(self):
         """初始化LLM"""
         try:
-            # 构建ChatOpenAI参数
+            # 构建统一模型初始化参数
             kwargs = {
-                "model": self.model,
                 "temperature": self.temperature,
                 "api_key": self.openai_api_key,
             }
@@ -58,7 +57,9 @@ class SQLAgentManager:
             if self.openai_base_url:
                 kwargs["base_url"] = self.openai_base_url
 
-            self.llm = ChatOpenAI(**kwargs)
+            self.llm = init_chat_model(
+                model=self.model, model_provider="openai", **kwargs
+            )
             logger.info(f"LLM initialized successfully with model: {self.model}")
             if self.openai_base_url:
                 logger.info(f"Using custom base URL: {self.openai_base_url}")

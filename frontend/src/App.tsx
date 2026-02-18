@@ -15,9 +15,13 @@ export default function App() {
     const [isStreaming, setIsStreaming] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadingFilename, setUploadingFilename] = useState<string>("");
+    const [sampleQuestions, setSampleQuestions] = useState<string[]>([]);
 
     const handleTableSelect = (tableName: string | null) => {
         setSelectedTable(tableName);
+        if (!tableName) {
+            setSampleQuestions([]);
+        }
         console.log("选中表:", tableName);
     };
 
@@ -34,10 +38,10 @@ export default function App() {
             <div className="h-16 border-b border-border/60 bg-background/80 backdrop-blur-md flex items-center px-6 flex-shrink-0 z-10">
                 <div className="flex items-center gap-3">
                     <div className="w-10 h-10 border border-border/70 bg-primary text-primary-foreground rounded-xl flex items-center justify-center font-bold shadow-sm">
-                        NL
+                        A:L
                     </div>
                     <h1 className="text-lg font-semibold tracking-tight uppercase">
-                        NL2SQL Data Analyst
+                        AI SQL  Assistant
                     </h1>
                 </div>
                 <div className="ml-auto flex items-center gap-4">
@@ -55,6 +59,7 @@ export default function App() {
                 >
                     <DataSourcePanel
                         onTableSelect={handleTableSelect}
+                        onSampleQuestionsChange={setSampleQuestions}
                         isCollapsed={isLeftPanelCollapsed}
                         selectedTable={selectedTable}
                         onUploadStateChange={(uploading, filename) => {
@@ -73,6 +78,7 @@ export default function App() {
                 <div className="flex-1 min-w-0 border border-border/60 rounded-2xl bg-card p-0 overflow-hidden">
                     <QueryPanel
                         selectedTable={selectedTable}
+                        sampleQuestions={sampleQuestions}
                         onQueryResult={handleQueryResult}
                         isLeftPanelCollapsed={isLeftPanelCollapsed}
                         onToggleLeftPanel={() => setIsLeftPanelCollapsed(!isLeftPanelCollapsed)}
